@@ -1,0 +1,22 @@
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #050706;
+  font: 12px/1.4 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  color: #cfdccf;
+}
+canvas { display: block; }
+
+#hint {
+  position: fixed; left: 16px; bottom: 12px; margin: 0;
+  opacity: 0.45; pointer-events: none;
+}
+#toast {
+  position: fixed; left: 50%; top: 18px; transform: translateX(-50%);
+  padding: 6px 12px; border-radius: 6px; background: rgba(20, 30, 22, 0.9);
+  opacity: 0; transition: opacity 0.3s; pointer-events: none;
+}
+#toast.show { opacity: 1; }
+
+.lil-gui.root { --width: 300px; max-height: calc(100vh - 16px); }
