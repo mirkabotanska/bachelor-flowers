@@ -4,6 +4,15 @@ The procedural lily from Blender, rebuilt for the browser with Three.js.
 It plays the build-up (points → wireframe → real flower), then keeps breathing:
 the petals slowly open and close, with a gentle sway and a few sparkles.
 
+## Styles
+
+Switch with the buttons at the top (or keys **1** / **2**):
+
+1. **Build-up**: points → wireframe → real flower, then breathing.
+2. **Fibres**: thousands of short wiggling strands grow out of the flower, coloured like the petal with
+   frosted tips, plus faint threads between the petals. The flower grows a little and opens while the
+   fibres appear, then breathes (the fibres stretch a bit when it breathes in). Settings: *2 · Fibres* panel.
+
 ## Run it
 
 You need [Node.js](https://nodejs.org) (version 18 or newer).
@@ -31,6 +40,7 @@ Your settings are remembered in this browser. Press **H** to hide the panel.
 - `src/lily/generator.js` – builds the flower (JavaScript version of the Geometry Nodes)
 - `src/lily/materials.js` – petal material, points, wireframe and sparkles (shaders)
 - `src/lily/Lily.js` – puts the flower together and updates it
+- `src/lily/fibres.js` – style 2 (fibres and threads)
 - `src/main.js` – scene, lights, camera, glow, animation timeline and the slider panel
 
 ## How it works (short)

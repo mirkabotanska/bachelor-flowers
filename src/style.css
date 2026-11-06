@@ -20,3 +20,15 @@ canvas { display: block; }
 #toast.show { opacity: 1; }
 
 .lil-gui.root { --width: 300px; max-height: calc(100vh - 16px); }
+
+#styles {
+  position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 6px; z-index: 10;
+}
+#styles button {
+  font: inherit; color: #cfdccf; background: rgba(12, 18, 14, 0.75);
+  border: 1px solid rgba(200, 230, 200, 0.2); border-radius: 999px;
+  padding: 6px 14px; cursor: pointer; backdrop-filter: blur(6px);
+}
+#styles button:hover { border-color: rgba(220, 240, 220, 0.5); }
+#styles button.active { background: #e9f2e6; color: #0b120d; border-color: #e9f2e6; }

@@ -17,9 +17,11 @@ export const uniforms = {
   uSparkleSize: { value: 0.012 },
   uSparkleAmount: { value: 0 },
   uTint: { value: new THREE.Color(1, 0.6, 0.7) },
-  uSpotAmount: { value: 0.8 },
+  uSpotAmount: { value: 0 },
   uSpotSize: { value: 1 },
   uPetalGlow: { value: 0.06 },
+  uCoreAlpha: { value: 1 },            // used by style 2 (1 = no change, style 1 never touches these)
+  uCoreBright: { value: 1 },
 };
 
 // When does each version of a vertex appear?  x = points, y = wireframe, z = solid
@@ -55,7 +57,7 @@ export function createSolidMaterial() {
         vU = aU; vV = aV; vPart = aPart; vSeed = aSeed; vSolid = buildStages(aGrowth).z;`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
-        uniform vec3 uTint; uniform float uSpotAmount, uSpotSize, uPetalGlow;
+        uniform vec3 uTint; uniform float uSpotAmount, uSpotSize, uPetalGlow, uCoreAlpha, uCoreBright;
         varying float vU; varying float vV; varying float vPart; varying float vSeed; varying float vSolid;
         float hash3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
         float noise3(vec3 p) {
@@ -73,7 +75,8 @@ export function createSolidMaterial() {
           col = mix(col, vec3(0.25, 0.02, 0.06), spot);
           diffuseColor.rgb = col;
         }
-        diffuseColor.a *= vSolid;`)
+        diffuseColor.a *= vSolid * uCoreAlpha;
+        diffuseColor.rgb *= uCoreBright;`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
         if (vPart < 0.5) totalEmissiveRadiance += diffuseColor.rgb * uPetalGlow;`);
   };

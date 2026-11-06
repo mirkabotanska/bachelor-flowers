@@ -78,6 +78,7 @@ export class Lily extends THREE.Group {
     this.points = new THREE.Points(pg, this.pointsMat);
     for (const o of [this.mesh, this.wire, this.points]) { o.frustumCulled = false; this.add(o); }
     this.wire.renderOrder = 1; this.points.renderOrder = 2;
+    this.version = (this.version ?? 0) + 1;
   }
 
   #updatePositions(d) {
@@ -85,6 +86,7 @@ export class Lily extends THREE.Group {
     g.attributes.position.array.set(d.position); g.attributes.position.needsUpdate = true;
     g.attributes.aGrowth.array.set(d.growth); g.attributes.aGrowth.needsUpdate = true;
     g.computeVertexNormals();
+    this.version = (this.version ?? 0) + 1;      // lets other effects know the flower moved
   }
 
   #updateSparkles() {

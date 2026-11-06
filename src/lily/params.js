@@ -23,7 +23,7 @@ export const FLOWER_PARAMS = {
     'Blossom Hue': [0.95, 0, 1, 0.005],
     'Blossom Saturation': [0.45, 0, 1, 0.01],
     'Blossom Value': [1.0, 0, 1, 0.01],
-    'Spot Amount': [0.8, 0, 1, 0.01],
+    'Spot Amount': [0, 0, 1, 0.01],
     'Spot Size': [1.0, 0.3, 3, 0.01],
   },
   'Stamen & Pistil': {
@@ -89,6 +89,38 @@ export const EFFECT_PARAMS = {
     'Bloom Threshold': [0.85, 0, 2, 0.01],
     'Exposure': [1.0, 0.1, 3, 0.01],
     'Petal Glow': [0.03, 0, 1, 0.005],
+  },
+};
+
+// Style 2 – Fibres / glowing halo
+export const FIBRE_VERSION = 4;          // bump when the style 2 defaults change (old saved values get replaced)
+export const FIBRE_PARAMS = {
+  '2 · Fibres': {
+    'Intro Duration (s)': [7, 1, 30, 0.1],
+    'Strand Count': [40000, 0, 120000, 1000],
+    'Strand Length': [0.09, 0, 0.3, 0.001],
+    'Silhouette Halo': [1.5, 0, 5, 0.05],
+    'Edge Fuzz': [1.0, 0, 6, 0.05],
+    'Wiggle': [0.25, 0, 2, 0.01],
+    'Wiggle Speed': [2, 0, 6, 0.01],
+    'Shimmer': [0.4, 0, 1, 0.01],
+    'Strand Opacity': [0.24, 0, 1, 0.01],
+    'Tip Whiteness': [0.5, 0, 1, 0.01],
+    'Dark Specks': [0, 0, 0.6, 0.01],
+    'Fibre Breathing': [0.3, 0, 1.5, 0.01],
+    'Dust Count': [15000, 0, 80000, 500],
+    'Dust Distance': [0.25, 0, 1.5, 0.01],
+    'Dust Speed': [0.25, 0, 2, 0.01],
+    'Dust Opacity': [0.45, 0, 1, 0.01],
+    'Dust Size': [1.2, 0.5, 6, 0.1],
+    'Thread Count': [0, 0, 2000, 10],
+    'Thread Opacity': [0.12, 0, 1, 0.01],
+    'Core Brightness': [1.0, 0, 1.5, 0.01],
+    'Core Opacity': [1, 0, 1, 0.01],
+    'Core Glow': [0.1, 0, 2, 0.01],
+    'Glow Strength': [0.55, 0, 3, 0.01],
+    'Glow Radius': [0.45, 0, 1, 0.01],
+    'Glow Threshold': [0.7, 0, 2, 0.01],
   },
 };
 
