@@ -149,6 +149,7 @@ export const TRACK_PARAMS = {
     'Appear Time (s)': [0.7, 0.05, 3, 0.05],
     'Box Size': [1, 0.2, 4, 0.01],
     'Size Variation': [0.6, 0, 1, 0.01],
+    'Leaf & Stem Boxes': [0.45, 0, 1, 0.01],
     'Line Width': [1.2, 0.5, 8, 0.1],
     'Box Opacity': [0.85, 0, 1, 0.01],
     'Box Colour': ['#ffffff'],

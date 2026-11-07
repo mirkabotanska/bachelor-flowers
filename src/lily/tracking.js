@@ -44,17 +44,29 @@ export class Tracking {
 
   restart() { this.boxes = []; this.markers = []; this.time = 0; }
 
-  // pick a vertex to follow; prefers the interesting parts (petal tips, anthers, leaf tips)
+  // pick a vertex to follow. First choose a PART (so the petals, which have the most vertices,
+  // don't win every time), then a vertex of that part, preferring tips.
   #pickTarget() {
     const g = this.lily.geometry; if (!g) return null;
-    const n = g.attributes.position.count, part = g.attributes.aPart.array, u = g.attributes.aU.array;
-    for (let tries = 0; tries < 40; tries++) {
-      const i = Math.floor(Math.random() * n);
-      const p = part[i];
-      const score = p === 4 ? 1 : p === 0 ? 0.35 + 0.65 * u[i] : p === 2 ? 0.2 + 0.6 * u[i] : p === 3 ? 0.4 : 0.15;
-      if (Math.random() < score) return i;
+    if (this.partsFor !== g || this.partsVersion !== this.lily.layout) {        // group vertex ids by part
+      this.partsFor = g; this.partsVersion = this.lily.layout;
+      this.byPart = { 0: [], 1: [], 2: [], 3: [], 4: [] };
+      const part = g.attributes.aPart.array;
+      for (let i = 0; i < part.length; i++) this.byPart[part[i]]?.push(i);
     }
-    return Math.floor(Math.random() * n);
+    const share = this.params['Leaf & Stem Boxes'];                            // 0 = only flower, 1 = only leaves/stem
+    const weights = { 0: (1 - share) * 0.6, 4: (1 - share) * 0.25, 3: (1 - share) * 0.15, 2: share * 0.75, 1: share * 0.25 };
+    let total = 0;
+    for (const k in weights) if (!this.byPart[k].length) weights[k] = 0; else total += weights[k];
+    if (total <= 0) return Math.floor(Math.random() * g.attributes.position.count);
+    let r = Math.random() * total, chosen = 0;
+    for (const k in weights) { r -= weights[k]; if (r <= 0) { chosen = k; break; } }
+    const list = this.byPart[chosen], u = g.attributes.aU.array;
+    for (let tries = 0; tries < 12; tries++) {                                   // prefer the outer half of petals/leaves
+      const i = list[Math.floor(Math.random() * list.length)];
+      if ((chosen != 0 && chosen != 2) || Math.random() < 0.3 + 0.7 * u[i]) return i;
+    }
+    return list[Math.floor(Math.random() * list.length)];
   }
 
   // world position of a vertex -> screen pixels (canvas pixels), plus pixels per world unit there
