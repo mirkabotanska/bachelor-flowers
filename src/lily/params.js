@@ -107,9 +107,8 @@ export const FIBRE_PARAMS = {
     'Strand Opacity': [0.24, 0, 1, 0.01],
     'Tip Whiteness': [0.5, 0, 1, 0.01],
     'Dark Specks': [0, 0, 0.6, 0.01],
-    'Fibre Breathing': [0.3, 0, 1.5, 0.01],
     'Dust Count': [15000, 0, 80000, 500],
-    'Dust Distance': [0.25, 0, 1.5, 0.01],
+    'Dust Distance': [0.3, 0, 1.5, 0.01],
     'Dust Speed': [0.25, 0, 2, 0.01],
     'Dust Opacity': [0.45, 0, 1, 0.01],
     'Dust Size': [1.2, 0.5, 6, 0.1],
@@ -123,6 +122,30 @@ export const FIBRE_PARAMS = {
     'Glow Threshold': [0.7, 0, 2, 0.01],
   },
 };
+
+// Style 2 settings that can change with the breath ("Breathing animation" panel).
+// Counts, intro and threads are left out: they would rebuild everything every frame.
+export const BREATH_EXCLUDE = ['Intro Duration (s)', 'Edge Fuzz', 'Dark Specks', 'Thread Count'];
+export const BREATH_CURVES = {
+  Smooth: (x) => x,
+  'Hold in': (x) => x * x,                 // stays near the breathing-in value longer
+  'Hold out': (x) => Math.sqrt(x),         // stays near the breathing-out value longer
+  Snappy: (x) => { const t = Math.min(Math.max((x - 0.3) / 0.4, 0), 1); return t * t * (3 - 2 * t); },
+};
+// what animates by default (same look as before: dust comes in, flower glows, fibres stretch)
+export const DEFAULT_BREATH_ANIMS = {
+  'Dust Distance': { in: 0.12, out: 0.3, curve: 'Smooth' },
+  'Dust Opacity': { in: 0.05, out: 0.45, curve: 'Smooth' },
+  'Core Glow': { in: 0.16, out: 0.1, curve: 'Smooth' },
+  'Strand Length': { in: 0.1, out: 0.08, curve: 'Smooth' },
+};
+
+// Settings taken out of the panel for now. They keep their default value and still work in the code,
+// so to bring one back, just remove it from this list.
+export const HIDDEN = [
+  'Petal Ring Rotation Offset', 'Spot Amount', 'Spot Size',
+  'Edge Fuzz', 'Dark Specks', 'Thread Count', 'Thread Opacity', 'Core Opacity',
+];
 
 export function defaults(groups) {
   const out = {};

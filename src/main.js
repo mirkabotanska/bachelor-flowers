@@ -7,7 +7,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import GUI from 'lil-gui';
 
-import { FLOWER_PARAMS, EFFECT_PARAMS, FIBRE_PARAMS, FIBRE_VERSION, defaults } from './lily/params.js';
+import { FLOWER_PARAMS, EFFECT_PARAMS, FIBRE_PARAMS, FIBRE_VERSION, BREATH_EXCLUDE, BREATH_CURVES, DEFAULT_BREATH_ANIMS, HIDDEN, defaults } from './lily/params.js';
 import { Fibres, fibreUniforms } from './lily/fibres.js';
 import { Lily } from './lily/Lily.js';
 import { uniforms } from './lily/materials.js';
@@ -15,12 +15,21 @@ import './style.css';
 
 // ------------------------------------------------------------------ settings (saved in this browser)
 const STORAGE_KEY = 'flowers-web-settings-v1';
-const DEFAULTS = { ...defaults(FLOWER_PARAMS), ...defaults(EFFECT_PARAMS), ...defaults(FIBRE_PARAMS), 'Auto Play': true, Style: 1 };
-const params = { ...DEFAULTS };
+const clone = (o) => JSON.parse(JSON.stringify(o));
+const DEFAULTS = { ...defaults(FLOWER_PARAMS), ...defaults(EFFECT_PARAMS), ...defaults(FIBRE_PARAMS), 'Auto Play': true, Style: 1, 'Breath Reverse': false };
+const params = { ...DEFAULTS, _breathAnims: clone(DEFAULT_BREATH_ANIMS) };
 try { Object.assign(params, JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')); } catch { /* no storage */ }
 if (params._fibreVersion !== FIBRE_VERSION) {           // new style 2 defaults: replace old saved style 2 values only
   Object.assign(params, defaults(FIBRE_PARAMS)); params._fibreVersion = FIBRE_VERSION;
 }
+if (!params._breathAnims || params['Dust Distance (breathing in)'] !== undefined) {   // settings saved before the breathing panel existed
+  const a = params._breathAnims = { ...clone(DEFAULT_BREATH_ANIMS), ...(params._breathAnims || {}) };
+  if (params['Dust Distance (breathing in)'] !== undefined) a['Dust Distance'].in = params['Dust Distance (breathing in)'];
+  if (params['Dust Distance (breathing out)'] !== undefined) a['Dust Distance'].out = params['Dust Distance'] = params['Dust Distance (breathing out)'];
+  if (params['Particles Out On Inhale'] !== undefined) params['Breath Reverse'] = params['Particles Out On Inhale'];
+  for (const old of ['Dust Distance (breathing in)', 'Dust Distance (breathing out)', 'Dust Opacity In Flower', 'Particles Out On Inhale', 'Core Glow Pulse', 'Fibre Breathing']) delete params[old];
+}
+for (const n of HIDDEN) { params[n] = DEFAULTS[n]; delete params._breathAnims?.[n]; }   // hidden settings stay at their default
 const save = () => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(params)); } catch { /* ignore */ } };
 
 // ------------------------------------------------------------------ renderer, scene, camera
@@ -87,13 +96,17 @@ function applyEffectParams() {
   bloomPass.radius = params['Bloom Radius'];
   bloomPass.threshold = params['Bloom Threshold'];
   renderer.toneMappingExposure = params['Exposure'];
+  applyFibreParams(params);
+}
+// style 2 values (called every frame with the breathing values mixed in)
+function applyFibreParams(v) {
   const fu = fibreUniforms;
-  fu.uLen.value = params['Strand Length']; fu.uHalo.value = params['Silhouette Halo'];
-  fu.uWiggle.value = params['Wiggle']; fu.uWiggleSpeed.value = params['Wiggle Speed']; fu.uShimmer.value = params['Shimmer'];
-  fu.uOpacity.value = params['Strand Opacity']; fu.uTipWhite.value = params['Tip Whiteness'];
-  fu.uDustDist.value = params['Dust Distance']; fu.uDustSpeed.value = params['Dust Speed'];
-  fu.uDustOpacity.value = params['Dust Opacity']; fu.uDustSize.value = params['Dust Size'];
-  fu.uThreadOpacity.value = params['Thread Opacity'];
+  fu.uLen.value = v['Strand Length']; fu.uHalo.value = v['Silhouette Halo'];
+  fu.uWiggle.value = v['Wiggle']; fu.uWiggleSpeed.value = v['Wiggle Speed']; fu.uShimmer.value = v['Shimmer'];
+  fu.uOpacity.value = v['Strand Opacity']; fu.uTipWhite.value = v['Tip Whiteness'];
+  fu.uDustDist.value = v['Dust Distance']; fu.uDustSpeed.value = v['Dust Speed'];
+  fu.uDustOpacity.value = v['Dust Opacity']; fu.uDustSize.value = v['Dust Size'];
+  fu.uThreadOpacity.value = v['Thread Opacity'];
   fu.uPixelRatio.value = renderer.getPixelRatio();
 }
 applyEffectParams();
@@ -115,20 +128,26 @@ const actions = {
     const json = JSON.stringify(params, null, 2);
     try { await navigator.clipboard.writeText(json); alertSmall('Settings copied'); } catch { console.log(json); alertSmall('Settings printed in the console'); }
   },
-  'Reset everything': () => { const st = params.Style; Object.assign(params, DEFAULTS); params.Style = st; params._fibreVersion = FIBRE_VERSION; save(); lily.rebuild(); applyEffectParams(); replay(); gui.controllersRecursive().forEach((c) => c.updateDisplay()); },
+  'Reset everything': () => {
+    const st = params.Style; Object.assign(params, DEFAULTS); params.Style = st; params._fibreVersion = FIBRE_VERSION;
+    params._breathAnims = clone(DEFAULT_BREATH_ANIMS); save();
+    lily.rebuild(); applyEffectParams(); buildBreathUI(); replay(); gui.controllersRecursive().forEach((c) => c.updateDisplay());
+  },
 };
 
 gui.add(actions, 'Replay build-up');
 gui.add(params, 'Auto Play').name('Auto play (build + breathe)').onChange((v) => { save(); if (v) replay(); });
 gui.add(info, 'vertices').name('Vertices').disable();
 
-const folders = {};
+const folders = {}, controllers = {};
 function addGroup(groups, onChange, closed = []) {
   for (const [folderName, entries] of Object.entries(groups)) {
     const f = gui.addFolder(folderName);
     folders[folderName] = f;
     for (const [name, [, min, max, step]] of Object.entries(entries)) {
+      if (HIDDEN.includes(name)) continue;
       const c = f.add(params, name, min, max, step).onChange(() => { onChange(name); save(); });
+      controllers[name] = c;
       if (name === 'Build Progress') c.listen();          // moves while the animation plays
     }
     if (closed.includes(folderName)) f.close();
@@ -146,6 +165,42 @@ addGroup(EFFECT_PARAMS, (name) => {
   applyEffectParams();
 }, ['Look']);
 addGroup(FIBRE_PARAMS, () => applyEffectParams());     // fibres resample themselves when counts change
+
+// ---- Breathing animation (style 2): any style 2 setting can get a 'breathing in' and 'breathing out' value
+const FIBRE_RANGES = FIBRE_PARAMS['2 · Fibres'];
+const animatable = Object.keys(FIBRE_RANGES).filter((n) => !BREATH_EXCLUDE.includes(n) && !HIDDEN.includes(n));
+const breathFolder = gui.addFolder('Breathing animation');
+folders['Breathing animation'] = breathFolder;
+breathFolder.add(params, 'Breath Reverse').name('Reverse (in ↔ out)').onChange(save);
+const picker = { setting: '' };
+let pickCtrl, addBtn, animFolders = [];
+function buildBreathUI() {
+  animFolders.forEach((f) => f.destroy()); animFolders = [];
+  pickCtrl?.destroy(); addBtn?.destroy();
+  const free = animatable.filter((n) => !params._breathAnims[n]);
+  if (!free.includes(picker.setting)) picker.setting = free[0] ?? '';
+  pickCtrl = breathFolder.add(picker, 'setting', free).name('Setting');
+  addBtn = breathFolder.add({ add: () => {
+    const n = picker.setting; if (!n || params._breathAnims[n]) return;
+    params._breathAnims[n] = { in: params[n], out: params[n], curve: 'Smooth' }; save(); buildBreathUI();
+  } }, 'add').name('+ Animate with breath');
+  for (const [name, a] of Object.entries(params._breathAnims)) {
+    if (!FIBRE_RANGES[name]) continue;
+    const [, min, max, step] = FIBRE_RANGES[name];
+    const f = breathFolder.addFolder(`↕ ${name}`);
+    f.add(a, 'in', min, max, step).name('Breathing in').onChange(save);
+    f.add(a, 'out', min, max, step).name('Breathing out').onChange(save);
+    f.add(a, 'curve', Object.keys(BREATH_CURVES)).name('Curve').onChange(save);
+    f.add({ remove: () => { delete params._breathAnims[name]; save(); buildBreathUI(); } }, 'remove').name('Stop animating');
+    animFolders.push(f);
+  }
+  for (const n of animatable) {                       // animated sliders are locked and marked
+    const c = controllers[n]; if (!c) continue;
+    const on = !!params._breathAnims[n];
+    c.name(on ? `${n} ↕` : n); on ? c.disable() : c.enable();
+  }
+}
+buildBreathUI();
 gui.add(actions, 'Copy settings (JSON)');
 gui.add(actions, 'Reset everything');
 info.vertices = String(lily.vertexCount);
@@ -167,6 +222,7 @@ function setStyle(n) {
   styleButtons.forEach((b) => b.classList.toggle('active', Number(b.dataset.style) === n));
   folders['Build-up'].show(n === 1);
   folders['2 · Fibres'].show(n === 2);
+  folders['Breathing animation'].show(n === 2);
   if (n === 2) folders['2 · Fibres'].open();
   params['Auto Play'] = true;
   gui.controllersRecursive().forEach((c) => c.updateDisplay());
@@ -238,29 +294,45 @@ function styleFibres(t) {
   }
   const S = THREE.MathUtils.smoothstep;
   fibreUniforms.uReveal.value = ease(p);
-  uniforms.uCoreAlpha.value = S(p, 0.35, 0.9) * params['Core Opacity'];
-  uniforms.uCoreBright.value = params['Core Brightness'];
-  uniforms.uPetalGlow.value = params['Core Glow'] * S(p, 0.35, 1);         // the flower glows from inside
-  bloomPass.strength = params['Glow Strength']; bloomPass.radius = params['Glow Radius']; bloomPass.threshold = params['Glow Threshold'];
   swayGroup.scale.setScalar(0.75 + 0.25 * (1 - Math.pow(1 - p, 3)));      // grows a little while it appears
 
   const open = params['Flower Blooming'];
   let bloom = 0.15 + (open - 0.15) * ease(S(p, 0.15, 1));                  // starts closed, opens up
-  let breath = 0;
+  let spread = 1;                                   // 1 = breathing out, 0 = breathing in
   if (params['Auto Play'] && breathStart !== null) {
     const bt = t - breathStart;
-    breath = Math.min(bt / 2, 1) * Math.sin((bt / params['Breath Length (s)']) * Math.PI * 2);
-    bloom = open + params['Breathing Amount'] * breath;
+    const fade = Math.min(bt / 2, 1);                                      // starts gently, no jump
+    const wave = Math.sin((bt / params['Breath Length (s)']) * Math.PI * 2);  // > 0 breathing in (petals open)
+    bloom = open + params['Breathing Amount'] * fade * wave;
+    spread = 1 - fade * (0.5 + 0.5 * (params['Breath Reverse'] ? -wave : wave));
   }
   bloom = Math.min(Math.max(bloom, 0), 1);
   if (bloom !== lastBloom) { lily.setBloom(bloom); lastBloom = bloom; }
-  fibreUniforms.uBreath.value = params['Fibre Breathing'] * 0.5 * breath;  // fibres stretch when breathing in
+
+  // mix in the breathing values ('Breathing animation' panel)
+  const v = { ...params };
+  for (const [name, a] of Object.entries(params._breathAnims)) {
+    const curve = BREATH_CURVES[a.curve] ?? BREATH_CURVES.Smooth;
+    v[name] = THREE.MathUtils.lerp(a.in, a.out, curve(spread));
+  }
+  applyFibreParams(v);
+  uniforms.uCoreAlpha.value = S(p, 0.35, 0.9) * v['Core Opacity'];
+  uniforms.uCoreBright.value = v['Core Brightness'];
+  uniforms.uPetalGlow.value = v['Core Glow'] * S(p, 0.35, 1);             // the flower glows from inside
+  bloomPass.strength = v['Glow Strength']; bloomPass.radius = v['Glow Radius']; bloomPass.threshold = v['Glow Threshold'];
+
+  // animated counts: sample the most that is needed once, then show a share of it
+  const most = (n) => { const a = params._breathAnims[n]; return Math.max(1, Math.round(a ? Math.max(a.in, a.out) : params[n])); };
+  const counts = { strands: most('Strand Count'), dust: most('Dust Count') };
+  fibreUniforms.uStrandFraction.value = v['Strand Count'] / counts.strands;
+  fibreUniforms.uDustFraction.value = v['Dust Count'] / counts.dust;
+  fibreUniforms.uBreath.value = 0;
   fibreUniforms.uTime.value = t;
-  fibres.update();
+  fibres.update(counts);
 }
 
 setStyle(params.Style === 2 ? 2 : 1);
 frame();
 
 // handy for testing in the browser console, e.g. lilyApp.params['Build Progress'] = 0.5
-window.lilyApp = { params, lily, fibres, replay, setStyle };
+window.lilyApp = { params, lily, fibres, fibreUniforms, replay, setStyle, buildBreathUI };

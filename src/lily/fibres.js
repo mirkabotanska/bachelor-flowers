@@ -23,6 +23,8 @@ export const fibreUniforms = {
   uDustSpeed: { value: 0.25 },
   uDustOpacity: { value: 0.6 },
   uDustSize: { value: 1.5 },
+  uStrandFraction: { value: 1 },  // share of the sampled strands that is visible (animated count)
+  uDustFraction: { value: 1 },
   uPixelRatio: { value: 1 },
   uThreadOpacity: { value: 0 },
 };
@@ -36,13 +38,14 @@ const RIM = /* glsl */ `
   }`;
 
 const STRAND_VS = /* glsl */ `
-  uniform float uTime, uLen, uHalo, uWiggle, uWiggleSpeed, uShimmer, uReveal, uBreath, uOpacity, uTipWhite;
+  uniform float uTime, uLen, uHalo, uWiggle, uWiggleSpeed, uShimmer, uReveal, uBreath, uOpacity, uTipWhite, uStrandFraction;
   attribute vec3 aBase; attribute vec3 aNormal; attribute vec3 aDir; attribute vec3 aColor;
   attribute vec4 aRand;          // x: length, y: phase, z: growth (when it appears), w: 0 root / 1 tip
   varying vec3 vColor; varying float vAlpha;
   ${RIM}
   void main() {
     float grow = smoothstep(aRand.z * 0.75, aRand.z * 0.75 + 0.25, uReveal);
+    if (fract(aRand.y * 7.31) > uStrandFraction) grow = 0.0;              // hidden when the count is lowered
     float rim = rimOf(aBase, aNormal);
     float halo = mix(0.35, 1.0 + uHalo, rim * rim);                         // longer at the silhouette
     float t = uTime * uWiggleSpeed + aRand.y * 6.283;
@@ -63,16 +66,18 @@ const GLOW_FS = /* glsl */ `
   void main() { if (vAlpha < 0.002) discard; gl_FragColor = vec4(vColor * vAlpha, vAlpha); }`;
 
 const DUST_VS = /* glsl */ `
-  uniform float uTime, uReveal, uDustDist, uDustSpeed, uDustOpacity, uDustSize, uPixelRatio, uHalo;
+  uniform float uTime, uReveal, uDustDist, uDustSpeed, uDustOpacity, uDustSize, uPixelRatio, uHalo, uDustFraction;
   attribute vec3 aBase; attribute vec3 aNormal; attribute vec3 aDir; attribute vec3 aColor;
   attribute vec4 aRand;          // x: speed, y: phase, z: growth, w: size
   varying vec3 vColor; varying float vAlpha;
   ${RIM}
   void main() {
     float grow = smoothstep(aRand.z * 0.75 + 0.1, aRand.z * 0.75 + 0.35, uReveal);
+    if (fract(aRand.y * 7.31) > uDustFraction) grow = 0.0;
     float life = fract(uTime * uDustSpeed * (0.5 + aRand.x) + aRand.y);    // 0 = just left the surface, 1 = gone
     float rim = rimOf(aBase, aNormal);
     vec3 dir = normalize(aNormal + aDir * 0.6);
+    // uDustDist moves between the 'breathing in' and 'breathing out' distance (set from main.js)
     vec3 p = aBase + dir * uDustDist * life * (0.4 + aRand.x)
            + vec3(sin(uTime + aRand.y * 20.0), cos(uTime * 0.8 + aRand.y * 13.0), sin(uTime * 0.6 + aRand.y * 7.0)) * 0.01;
     vColor = mix(aColor, vec3(1.0), 0.35) * 1.6;
@@ -119,10 +124,12 @@ export class Fibres extends THREE.Group {
   }
 
   // call every frame while style 2 is on: resamples / follows the flower when it changes
-  update() {
+  // counts = how many strands / dust particles to sample (the most any breathing value needs)
+  update(counts = { strands: this.params['Strand Count'], dust: this.params['Dust Count'] }) {
+    this.counts = counts;
     const g = this.lily.geometry; if (!g) return;
     const p = this.params;
-    const key = `${this.lily.layout}/${p['Strand Count']}/${p['Dust Count']}/${p['Thread Count']}/${p['Edge Fuzz']}`;
+    const key = `${this.lily.layout}/${counts.strands}/${counts.dust}/${p['Thread Count']}/${p['Edge Fuzz']}`;
     if (key !== this.key) { this.key = key; this.#sample(); this.seenVersion = -1; this.colourKey = ''; }
     if (this.lily.version !== this.seenVersion) { this.seenVersion = this.lily.version; this.#follow(); }
     const ck = ['Blossom Hue', 'Blossom Saturation', 'Blossom Value', 'Dark Specks'].map((k) => p[k]).join('/');
@@ -139,8 +146,8 @@ export class Fibres extends THREE.Group {
       a.fromArray(pos, idx[t * 3] * 3); b.fromArray(pos, idx[t * 3 + 1] * 3); c.fromArray(pos, idx[t * 3 + 2] * 3);
       total += b.sub(a).cross(c.sub(a)).length() * 0.5; areas[t] = total;
     }
-    const ns = Math.max(0, Math.round(this.params['Strand Count']));
-    const nd = Math.max(0, Math.round(this.params['Dust Count']));
+    const ns = Math.max(0, Math.round(this.counts.strands));
+    const nd = Math.max(0, Math.round(this.counts.dust));
     const n = ns + nd;
     this.ns = ns; this.nd = nd;
     const rnd = seeded(1234);
