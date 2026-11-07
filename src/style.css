@@ -23,7 +23,7 @@ canvas { display: block; }
 
 #styles {
   position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
-  display: flex; gap: 6px; z-index: 10;
+  display: flex; gap: 6px; z-index: 2000;
 }
 #styles button {
   font: inherit; color: #cfdccf; background: rgba(12, 18, 14, 0.75);

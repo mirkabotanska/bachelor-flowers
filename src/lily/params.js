@@ -140,6 +140,35 @@ export const DEFAULT_BREATH_ANIMS = {
   'Strand Length': { in: 0.1, out: 0.08, curve: 'Smooth' },
 };
 
+// Style 3 – Tracking (selection boxes)
+export const TRACK_PARAMS = {
+  '3 · Tracking': {
+    'Tracking Intro (s)': [4, 1, 20, 0.1],
+    'Box Count': [12, 0, 60, 1],
+    'Box Lifetime (s)': [3.5, 0.5, 15, 0.1],
+    'Appear Time (s)': [0.7, 0.05, 3, 0.05],
+    'Box Size': [1, 0.2, 4, 0.01],
+    'Size Variation': [0.6, 0, 1, 0.01],
+    'Line Width': [1.2, 0.5, 8, 0.1],
+    'Box Opacity': [0.85, 0, 1, 0.01],
+    'Box Colour': ['#ffffff'],
+    'Follow Smoothness': [0.85, 0, 1, 0.01],
+    'Jitter': [0.15, 0, 1, 0.01],
+    'Tiny Markers': [24, 0, 200, 1],
+    'Corner Brackets': [false],
+    'Centre Dots': [false],
+    'Labels': [false],
+  },
+  '3 · Extra effects': {
+    'Connect Lines': [0, 0, 1, 0.01],
+    'Invert Inside': [false],
+    'Pixelate Inside': [false],
+    'Pixel Size': [8, 2, 40, 1],
+    'Spotlight': [0, 0, 0.95, 0.01],
+    'Glitter Dust': [false],
+  },
+};
+
 // Settings taken out of the panel for now. They keep their default value and still work in the code,
 // so to bring one back, just remove it from this list.
 export const HIDDEN = [

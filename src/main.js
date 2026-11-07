@@ -7,7 +7,8 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import GUI from 'lil-gui';
 
-import { FLOWER_PARAMS, EFFECT_PARAMS, FIBRE_PARAMS, FIBRE_VERSION, BREATH_EXCLUDE, BREATH_CURVES, DEFAULT_BREATH_ANIMS, HIDDEN, defaults } from './lily/params.js';
+import { FLOWER_PARAMS, EFFECT_PARAMS, FIBRE_PARAMS, FIBRE_VERSION, BREATH_EXCLUDE, BREATH_CURVES, DEFAULT_BREATH_ANIMS, HIDDEN, TRACK_PARAMS, defaults } from './lily/params.js';
+import { Tracking } from './lily/tracking.js';
 import { Fibres, fibreUniforms } from './lily/fibres.js';
 import { Lily } from './lily/Lily.js';
 import { uniforms } from './lily/materials.js';
@@ -16,7 +17,7 @@ import './style.css';
 // ------------------------------------------------------------------ settings (saved in this browser)
 const STORAGE_KEY = 'flowers-web-settings-v1';
 const clone = (o) => JSON.parse(JSON.stringify(o));
-const DEFAULTS = { ...defaults(FLOWER_PARAMS), ...defaults(EFFECT_PARAMS), ...defaults(FIBRE_PARAMS), 'Auto Play': true, Style: 1, 'Breath Reverse': false };
+const DEFAULTS = { ...defaults(FLOWER_PARAMS), ...defaults(EFFECT_PARAMS), ...defaults(FIBRE_PARAMS), ...defaults(TRACK_PARAMS), 'Auto Play': true, Style: 1, 'Breath Reverse': false };
 const params = { ...DEFAULTS, _breathAnims: clone(DEFAULT_BREATH_ANIMS) };
 try { Object.assign(params, JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')); } catch { /* no storage */ }
 if (params._fibreVersion !== FIBRE_VERSION) {           // new style 2 defaults: replace old saved style 2 values only
@@ -65,6 +66,7 @@ swayGroup.add(lily);
 const fibres = new Fibres(lily, params);          // style 2
 swayGroup.add(fibres);
 scene.add(swayGroup);
+const tracking = new Tracking(lily, camera, renderer, params);   // style 3 (2D overlay)
 
 // ------------------------------------------------------------------ glow
 const composer = new EffectComposer(renderer);
@@ -116,7 +118,7 @@ const clock = new THREE.Clock();
 let buildStart = 0;                 // seconds
 let breathStart = null;
 let lastBloom = null;
-const replay = () => { buildStart = clock.getElapsedTime(); breathStart = null; lastBloom = null; lily.rebuild(); };
+const replay = () => { buildStart = clock.getElapsedTime(); breathStart = null; lastBloom = null; lily.rebuild(); tracking.restart(); };
 const ease = (x) => x * x * (3 - 2 * x);
 
 // ------------------------------------------------------------------ slider panel
@@ -144,9 +146,10 @@ function addGroup(groups, onChange, closed = []) {
   for (const [folderName, entries] of Object.entries(groups)) {
     const f = gui.addFolder(folderName);
     folders[folderName] = f;
-    for (const [name, [, min, max, step]] of Object.entries(entries)) {
+    for (const [name, [def, min, max, step]] of Object.entries(entries)) {
       if (HIDDEN.includes(name)) continue;
-      const c = f.add(params, name, min, max, step).onChange(() => { onChange(name); save(); });
+      const c = (typeof def === 'string' && def.startsWith('#') ? f.addColor(params, name) : f.add(params, name, min, max, step))
+        .onChange(() => { onChange(name); save(); });
       controllers[name] = c;
       if (name === 'Build Progress') c.listen();          // moves while the animation plays
     }
@@ -201,6 +204,7 @@ function buildBreathUI() {
   }
 }
 buildBreathUI();
+addGroup(TRACK_PARAMS, () => {}, ['3 · Extra effects']);
 gui.add(actions, 'Copy settings (JSON)');
 gui.add(actions, 'Reset everything');
 info.vertices = String(lily.vertexCount);
@@ -212,7 +216,7 @@ function alertSmall(text) {
 }
 window.addEventListener('keydown', (e) => {
   if (e.key === 'h') gui.show(gui._hidden);                     // H hides the panel
-  if (e.key === '1' || e.key === '2') setStyle(Number(e.key));  // 1 / 2 switch the style
+  if (['1', '2', '3'].includes(e.key)) setStyle(Number(e.key)); // 1 / 2 / 3 switch the style
 });
 
 // ------------------------------------------------------------------ styles (buttons at the top)
@@ -223,6 +227,9 @@ function setStyle(n) {
   folders['Build-up'].show(n === 1);
   folders['2 · Fibres'].show(n === 2);
   folders['Breathing animation'].show(n === 2);
+  folders['3 · Tracking'].show(n === 3); folders['3 · Extra effects'].show(n === 3);
+  if (n === 3) folders['3 · Tracking'].open();
+  if (n !== 3) tracking.clear();
   if (n === 2) folders['2 · Fibres'].open();
   params['Auto Play'] = true;
   gui.controllersRecursive().forEach((c) => c.updateDisplay());
@@ -235,7 +242,9 @@ function frame() {
   const t = clock.getElapsedTime();
   uniforms.uTime.value = t;
 
-  if (params.Style === 2) styleFibres(t);
+  const dt = Math.min(t - (frame.last ?? t), 0.1); frame.last = t;
+  if (params.Style === 3) styleTracking(t, dt);
+  else if (params.Style === 2) styleFibres(t);
   else styleBuildUp(t);
 
   // gentle sway so it never stands completely still
@@ -245,6 +254,7 @@ function frame() {
 
   controls.update();
   composer.render();
+  if (params.Style === 3) tracking.draw(renderer.domElement);   // boxes on top, right after the 3D frame
   requestAnimationFrame(frame);
 }
 
@@ -331,8 +341,49 @@ function styleFibres(t) {
   fibres.update(counts);
 }
 
-setStyle(params.Style === 2 ? 2 : 1);
+// ---- style 3: the flower appears and breathes, selection boxes find and follow its parts
+function styleTracking(t, dt) {
+  lily.points.visible = lily.wire.visible = lily.sparkles.visible = false;
+  uniforms.uProgress.value = 1;
+  uniforms.uSparkleAmount.value = 0;
+  swayGroup.scale.setScalar(1);
+
+  let p = params['Build Progress'];
+  if (params['Auto Play']) {
+    p = Math.min((t - buildStart) / params['Tracking Intro (s)'], 1);
+    params['Build Progress'] = p;
+    if (p >= 1 && breathStart === null) breathStart = t;
+  }
+  const S = THREE.MathUtils.smoothstep;
+  uniforms.uCoreAlpha.value = S(p, 0, 0.6);                               // the flower fades in
+  uniforms.uCoreBright.value = 1;
+  uniforms.uPetalGlow.value = params['Petal Glow'];                        // same look as style 1 ('Look' panel)
+  bloomPass.strength = params['Bloom Strength']; bloomPass.radius = params['Bloom Radius']; bloomPass.threshold = params['Bloom Threshold'];
+
+  const open = params['Flower Blooming'];
+  let bloom = open - 0.25 * (1 - ease(p));                                 // opens a little while it appears
+  if (params['Auto Play'] && breathStart !== null) {
+    const bt = t - breathStart;
+    bloom = open + params['Breathing Amount'] * Math.min(bt / 2, 1) * Math.sin((bt / params['Breath Length (s)']) * Math.PI * 2);
+  }
+  bloom = Math.min(Math.max(bloom, 0), 1);
+  if (bloom !== lastBloom) { lily.setBloom(bloom); lastBloom = bloom; }
+
+  // optional: the glittering dust from style 2 (without the streaks)
+  fibres.visible = params['Glitter Dust'];
+  if (fibres.visible) {
+    applyFibreParams(params);
+    fibreUniforms.uOpacity.value = 0; fibreUniforms.uReveal.value = ease(p);
+    fibreUniforms.uStrandFraction.value = 0; fibreUniforms.uDustFraction.value = 1;
+    fibreUniforms.uTime.value = t;
+    fibres.update({ strands: 1, dust: params['Dust Count'] });
+  }
+
+  tracking.update(dt, S(p, 0.1, 0.7));                                    // boxes start while the flower appears
+}
+
+setStyle([1, 2, 3].includes(params.Style) ? params.Style : 1);
 frame();
 
 // handy for testing in the browser console, e.g. lilyApp.params['Build Progress'] = 0.5
-window.lilyApp = { params, lily, fibres, fibreUniforms, replay, setStyle, buildBreathUI };
+window.lilyApp = { params, lily, fibres, fibreUniforms, tracking, replay, setStyle, buildBreathUI };
