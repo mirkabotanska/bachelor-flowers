@@ -9,6 +9,7 @@ import GUI from 'lil-gui';
 
 import { FLOWER_PARAMS, EFFECT_PARAMS, FIBRE_PARAMS, FIBRE_VERSION, BREATH_EXCLUDE, BREATH_CURVES, DEFAULT_BREATH_ANIMS, HIDDEN, TRACK_PARAMS, defaults } from './lily/params.js';
 import { Tracking } from './lily/tracking.js';
+import { createRootsPage } from './roots/growth.js';
 import { Fibres, fibreUniforms } from './lily/fibres.js';
 import { Lily } from './lily/Lily.js';
 import { uniforms } from './lily/materials.js';
@@ -67,6 +68,7 @@ const fibres = new Fibres(lily, params);          // style 2
 swayGroup.add(fibres);
 scene.add(swayGroup);
 const tracking = new Tracking(lily, camera, renderer, params);   // style 3 (2D overlay)
+const rootsPage = createRootsPage();                             // page 4 (its own page, camera + roots)
 
 // ------------------------------------------------------------------ glow
 const composer = new EffectComposer(renderer);
@@ -216,7 +218,7 @@ function alertSmall(text) {
 }
 window.addEventListener('keydown', (e) => {
   if (e.key === 'h') gui.show(gui._hidden);                     // H hides the panel
-  if (['1', '2', '3'].includes(e.key)) setStyle(Number(e.key)); // 1 / 2 / 3 switch the style
+  if (['1', '2', '3', '4'].includes(e.key)) setStyle(Number(e.key)); // 1–4 switch the style
 });
 
 // ------------------------------------------------------------------ styles (buttons at the top)
@@ -230,6 +232,13 @@ function setStyle(n) {
   folders['3 · Tracking'].show(n === 3); folders['3 · Extra effects'].show(n === 3);
   if (n === 3) folders['3 · Tracking'].open();
   if (n !== 3) tracking.clear();
+  // page 4 is a separate page: hide the 3D view and the panel, start the roots
+  const isRoots = n === 4;
+  renderer.domElement.style.display = isRoots ? 'none' : '';
+  document.getElementById('hint').style.display = isRoots ? 'none' : '';
+  isRoots ? gui.hide() : gui.show();
+  isRoots ? rootsPage.show() : rootsPage.hide();
+  if (isRoots) return;
   if (n === 2) folders['2 · Fibres'].open();
   params['Auto Play'] = true;
   gui.controllersRecursive().forEach((c) => c.updateDisplay());
@@ -243,6 +252,7 @@ function frame() {
   uniforms.uTime.value = t;
 
   const dt = Math.min(t - (frame.last ?? t), 0.1); frame.last = t;
+  if (params.Style === 4) { requestAnimationFrame(frame); return; }     // roots page runs its own loop
   if (params.Style === 3) styleTracking(t, dt);
   else if (params.Style === 2) styleFibres(t);
   else styleBuildUp(t);
@@ -382,7 +392,7 @@ function styleTracking(t, dt) {
   tracking.update(dt, S(p, 0.1, 0.7));                                    // boxes start while the flower appears
 }
 
-setStyle([1, 2, 3].includes(params.Style) ? params.Style : 1);
+setStyle([1, 2, 3, 4].includes(params.Style) ? params.Style : 1);
 frame();
 
 // handy for testing in the browser console, e.g. lilyApp.params['Build Progress'] = 0.5

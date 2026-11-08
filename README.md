@@ -13,6 +13,11 @@ Switch with the buttons at the top (or keys **1** / **2**):
    frosted tips, plus faint threads between the petals. The flower grows a little and opens while the
    fibres appear, then breathes (the fibres stretch a bit when it breathes in). Settings: *2 · Fibres* panel.
 
+3. **Tracking**: selection boxes find and follow parts of the flower (panel *3 · Tracking*).
+4. **Roots**: "Growth test 03" – roots grow towards a flashlight seen by the webcam
+   (press *Calibrate* with the flashlight off first). Tick *Use mouse instead of camera* to test with the mouse.
+   Code: `src/roots/growth.js` (the original code, only wrapped so it runs as page 4).
+
 ## Run it
 
 You need [Node.js](https://nodejs.org) (version 18 or newer).

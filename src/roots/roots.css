@@ -1,0 +1,76 @@
+/* Page 4 – Roots. Your friend's style.css, scoped to the roots page. */
+#roots-page.lab {
+  position: fixed;
+  inset: 0;
+  overflow: auto;
+  box-sizing: border-box;
+  z-index: 1500;
+  margin: 0;
+  padding: 64px 16px 16px;
+  background: #111;
+  color: #eee;
+  font-family: system-ui, sans-serif;
+}
+
+#roots-page .lab__title {
+  margin: 0 0 16px;
+  font-size: 20px;
+}
+
+#roots-page .lab__views {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+#roots-page .view {
+  margin: 0;
+}
+
+#roots-page .view--wide {
+  grid-column: 1 / -1;
+}
+
+#roots-page .view__canvas {
+  display: block;
+  width: 100%;
+  background: #000;
+}
+
+#roots-page .view__canvas--mask {
+  image-rendering: pixelated;
+}
+
+#roots-page .view__caption {
+  margin-top: 8px;
+  color: #aaa;
+  font-size: 14px;
+}
+
+#roots-page .controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+#roots-page .controls__button {
+  padding: 8px 16px;
+  font: inherit;
+  cursor: pointer;
+}
+
+#roots-page .controls__field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#roots-page .status {
+  margin: 16px 0;
+  font-size: 18px;
+}
+
+#roots-page[hidden] { display: none; }
+#roots-page .view__canvas--growth { touch-action: none; cursor: crosshair; }
