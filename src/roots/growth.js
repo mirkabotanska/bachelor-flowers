@@ -80,7 +80,10 @@ export function createRootsPage() {
   const SHRINK_DELAY_SECONDS = 0.6;         // [changed] 3 -> 0.6: unlit roots start to disappear quickly
 
   // [added] disappearing: roots dissolve into drifting particles (or just fade, see the checkbox)
-  const DISSOLVE_SECONDS = 0.6;          // how long the line takes to fall apart (tips first)
+  const DISSOLVE_SECONDS = 1.0;          // [changed] 0.6 -> 1: how long a root takes to fall apart
+  const LINE_FADE_SECONDS = 0.5;         // each piece of line fades out (instead of switching off)
+  const PARTICLE_FADE_IN = 0.35;         // particles fade in...
+  const PARTICLE_LOOSEN = 0.7;           // ...and sit still on the line before drifting off (s)
   const PARTICLE_EVERY = 1;              // one particle per this many root points
   const PARTICLE_LIFE_MIN = 0.9;         // seconds
   const PARTICLE_LIFE_MAX = 2;
@@ -155,8 +158,16 @@ export function createRootsPage() {
   const MAX_FOLLOW_SPEED = 1600;        // px/s
   const LEADER_STEER = 0.55;            // how sharply it turns towards the light
   const LEADER_WOBBLE = 0.12;           // a little wiggle so it stays organic
-  const LEADER_TWIG_STEPS = 9;          // length of the side twigs it leaves behind
-  const LEADER_TWIG_MIN_GAP = 10;       // steps between twigs
+  // [added] branching depends on how fast the light moves: slow = more and longer twigs, fast = a clean line
+  const SLOW_SPEED = 150;               // px/s and slower counts as 'slow'
+  const FAST_SPEED = 900;               // px/s and faster counts as 'fast'
+  const TWIG_STEPS_SLOW = 14;           // side twig length when moving slowly
+  const TWIG_STEPS_FAST = 5;            // ...and when moving fast
+  const TWIG_GAP_SLOW = [4, 10];        // steps between twigs when slow (min, max)
+  const TWIG_GAP_FAST = [22, 40];       // ...and when fast
+  const TIP_FORK_EVERY_SLOW = 0.35;     // s between small forks at the light when slow (none when fast)
+  const LEADER_TWIG_STEPS = 9;
+  const LEADER_TWIG_MIN_GAP = 10;
   const LEADER_TWIG_MAX_GAP = 26;
 
   const video = page.querySelector(".lab__video");
@@ -196,6 +207,8 @@ export function createRootsPage() {
   let particles = [];                            // [added] dissolving roots
   let leader = null;                             // [added] the root that follows a moving light
   let prevLight = null, lightSpeed = 0, moveAngle = 0;
+  let branchiness = 0.5;                         // [added] 1 = slow light (branch a lot), 0 = fast
+  let tipForkCooldown = 0;
 
   function getBrightness(pixels, pixelIndex) {
     const offset = pixelIndex * 4;
@@ -532,8 +545,10 @@ export function createRootsPage() {
       root.stepsUntilSplit--;
       if (root.stepsUntilSplit <= 0) {
         splitBranch(root);
-        root.stepsUntilSplit = root === leader                       // [changed] the main route leaves fewer, short twigs
-          ? Math.round(randomBetween(LEADER_TWIG_MIN_GAP, LEADER_TWIG_MAX_GAP))
+        root.stepsUntilSplit = root === leader                       // [changed] twigs along the route depend on speed
+          ? Math.round(randomBetween(
+              TWIG_GAP_FAST[0] + (TWIG_GAP_SLOW[0] - TWIG_GAP_FAST[0]) * branchiness,
+              TWIG_GAP_FAST[1] + (TWIG_GAP_SLOW[1] - TWIG_GAP_FAST[1]) * branchiness))
           : randomStepsUntilSplit();
       }
     }
@@ -650,7 +665,7 @@ export function createRootsPage() {
       end = Math.max(end, at);
       if (particleToggle.checked && (i - from) % PARTICLE_EVERY === 0) spawnParticle(root, pts[i], at);
     }
-    root.dissolveEnd = particleToggle.checked ? end : now + DISSOLVE_SECONDS * 1.5;
+    root.dissolveEnd = particleToggle.checked ? end + LINE_FADE_SECONDS : now + DISSOLVE_SECONDS * 1.5;   // [changed] let the last pieces fade
   }
 
   // [added] a route that follows the light: the parts the light left behind dissolve while you keep moving
@@ -659,17 +674,23 @@ export function createRootsPage() {
     let cut = root.cut ?? 0;
     for (let i = cut; i < pts.length; i++) if (getDistance(pts[i], light) < LIGHT_REACH) pts[i].lit = now;
     while (cut < pts.length - 2 && now - (pts[cut].lit ?? pts[cut].t) > SHRINK_DELAY_SECONDS) {
-      if (particleToggle.checked) spawnParticle(root, pts[cut], now + Math.random() * DISSOLVE_SECONDS * PARTICLE_RANDOMNESS);
+      const at = now + Math.random() * DISSOLVE_SECONDS * PARTICLE_RANDOMNESS;
+      pts[cut].dissolveAt = at;                                    // [added] fades out instead of vanishing
+      if (particleToggle.checked) spawnParticle(root, pts[cut], at);
       cut++;
     }
     root.cut = cut;
+    // [added] the drawn line starts a bit before the cut while those pieces fade out
+    root.visibleFrom = root.visibleFrom ?? 0;
+    while (root.visibleFrom < cut && now - (pts[root.visibleFrom].dissolveAt ?? 0) > LINE_FADE_SECONDS) root.visibleFrom++;
   }
 
   function updateParticles(deltaSeconds) {
     particles = particles.filter((q) => now < q.born + q.life);
     for (const q of particles) {
       if (now < q.born) continue;
-      q.x += q.vx * deltaSeconds; q.y += q.vy * deltaSeconds;
+      const loose = smooth((now - q.born) / PARTICLE_LOOSEN);             // [added] still at first, then drifts
+      q.x += q.vx * deltaSeconds * loose; q.y += q.vy * deltaSeconds * loose;
       q.vx *= 1 - 0.6 * deltaSeconds; q.vy *= 1 - 0.6 * deltaSeconds;     // slow down
     }
   }
@@ -680,7 +701,8 @@ export function createRootsPage() {
       const k = (now - q.born) / q.life;                                  // 0 -> 1
       const size = q.size * (1 - k);
       if (size <= 0.05) continue;
-      growthContext.fillStyle = `rgba(${q.color}, ${q.alpha * (1 - k) * Math.min(1, k * 8)})`;
+      const fadeIn = smooth((now - q.born) / PARTICLE_FADE_IN);           // [changed] soft fade in
+      growthContext.fillStyle = `rgba(${q.color}, ${q.alpha * (1 - k) * fadeIn})`;
       growthContext.beginPath();
       growthContext.arc(q.x, q.y, size, 0, Math.PI * 2);
       growthContext.fill();
@@ -840,7 +862,25 @@ export function createRootsPage() {
       if (leader) {
         const d = getDistance(leader.points.at(-1), light);
         const speed = Math.min(MAX_FOLLOW_SPEED, Math.max(GROW_SPEED, d * FOLLOW_GAIN));
+        // [added] slow = more branching, fast = cleaner line
+        const target = 1 - Math.min(Math.max((lightSpeed - SLOW_SPEED) / (FAST_SPEED - SLOW_SPEED), 0), 1);
+        branchiness += (target - branchiness) * Math.min(1, deltaSeconds * 4);
+        leader.branchLength = (TWIG_STEPS_FAST + (TWIG_STEPS_SLOW - TWIG_STEPS_FAST) * branchiness) / BRANCH_SHRINK;
         if (d > STEP_LENGTH) growRoot(leader, Math.min(speed * deltaSeconds, d), light);   // never past the light
+        // small forks right at the light when moving slowly
+        tipForkCooldown -= deltaSeconds;
+        if (branchiness > 0.3 && tipForkCooldown <= 0 && leader.points.length > 3 && !isAtPointLimit()) {
+          const forks = branchiness > 0.75 && Math.random() < 0.5 ? 2 : 1;
+          for (let k = 0; k < forks; k++) {
+            const side = Math.random() < 0.5 ? -1 : 1;
+            const steps = Math.round(4 + 8 * branchiness * Math.random());
+            roots.push(createRoot(leader.points.at(-1), leader.angle + side * randomBetween(0.6, 1.4), {
+              kind: "side", burstSteps: steps, branchLength: steps, parent: leader,
+              attachIndex: leader.points.length - 1, opacity: 1,
+            }));
+          }
+          tipForkCooldown = TIP_FORK_EVERY_SLOW / Math.max(branchiness, 0.05) * randomBetween(0.7, 1.3);
+        }
         leader.opacity = 1;
         trimTrail(leader, light);                                                // [added]
       }
@@ -937,7 +977,7 @@ export function createRootsPage() {
     for (const root of roots) {
       const { points, opacity, taperSteps, depth } = root;
       const lastIndex = points.length - 1;
-      const from = root.cut ?? 0;                                     // [added] start of a route may be gone
+      const from = Math.min(root.visibleFrom ?? 0, root.cut ?? 0);   // [added] start of a route may be (fading) gone
       const dissolving = root.dissolving !== undefined;
       // [added] fade mode: the whole root fades; particle mode: pieces vanish when their particles appear
       const fade = dissolving && !particleToggle.checked ? 1 - Math.min((now - root.dissolving) / (DISSOLVE_SECONDS * 1.5), 1) : 1;
@@ -947,14 +987,17 @@ export function createRootsPage() {
 
       for (let i = from; i < lastIndex; i += CHUNK) {
         const j = Math.min(i + CHUNK, lastIndex);
-        if (dissolving && particleToggle.checked && now >= Math.min(points[i].dissolveAt ?? Infinity, points[j].dissolveAt ?? Infinity)) continue;
+        // [changed] pieces fade out after their dissolve time instead of switching off
+        const goneAt = Math.min(points[i].dissolveAt ?? Infinity, points[j].dissolveAt ?? Infinity);
+        const pieceFade = goneAt === Infinity ? 1 : 1 - smooth((now - goneAt) / LINE_FADE_SECONDS);
+        if (pieceFade <= 0) continue;
         const mid = (i + j) / 2;
         const taper = mid > taperStart ? (lastIndex - mid) / Math.max(taperSteps, 1) : 1;
         const age = now - points[i].t;
         const pulse = Math.exp(-(now - root.charge) / CHARGE_SECONDS);           // [added] connection pulse
         const green = smooth((age - SPARK_SECONDS * 0.5) / TO_GREEN_SECONDS) * (1 - pulse);
         const flicker = green < 0.6 ? 0.7 + 0.3 * Math.random() : 1;              // electric flicker
-        const alpha = fade * opacity * Math.min(Math.max(taper, 0), 1) * flicker * (1.25 - 0.25 * green) * (1 + 0.6 * pulse);
+        const alpha = pieceFade * fade * opacity * Math.min(Math.max(taper, 0), 1) * flicker * (1.25 - 0.25 * green) * (1 + 0.6 * pulse);
         const width = baseWidth * (0.45 + 0.55 * (1 - mid / Math.max(lastIndex, 1)));
         strokePiece(points, i, j, Math.max(width, 0.5), mixColor(ELECTRIC_COLOR, GREEN_COLOR, green), Math.min(alpha, 1));
       }
