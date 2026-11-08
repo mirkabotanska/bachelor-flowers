@@ -26,8 +26,8 @@ const MARKUP = `<h1 class="lab__title">Roots – Growth test 03</h1>
     <section class="controls">
       <button class="controls__button" type="button">Calibrate (C)</button>
       <label class="controls__field">
-        <input class="controls__mouse" type="checkbox" />
-        Use mouse instead of camera
+        <input class="controls__camera" type="checkbox" />
+        Use camera (flashlight)
       </label>
       <label class="controls__field">
         <input class="controls__particles" type="checkbox" checked />
@@ -52,7 +52,7 @@ export function createRootsPage() {
 
   let running = false;                                           // [added]
   let rafId = 0;                                                 // [added]
-  const mouseToggle = page.querySelector('.controls__mouse');    // [added]
+  const cameraToggle = page.querySelector('.controls__camera');  // [added] off = mouse (default)
   const particleToggle = page.querySelector('.controls__particles');   // [added]
   const mouse = { x: 0, y: 0, down: false };                     // [added]
 
@@ -149,6 +149,14 @@ export function createRootsPage() {
   const SPOT_REUSE = 40;                // a new cluster this close to another one adds to it
   const CHARGE_SECONDS = 0.9;           // how long a pulse of light runs through connected roots
   const CONNECT_FLASH_RADIUS = 70;
+
+  // [added] pressing / shining on the same spot again (or more people at once) makes it grow stronger
+  const BOOST_RADIUS = 80;              // a new press this close to a spot boosts that spot
+  const BOOST_MAX = 5;                  // how strong a spot can get
+  const BOOST_DECAY_SECONDS = 5;        // boost drops by 1 every this many seconds
+  const BOOST_LONGER = [2, 4];          // extra steps for the spot's existing roots (x boost factor)
+  const BOOST_INNER_BRANCHES = 2;       // new branches from inside existing roots (+1 per boost level)
+  const BOOST_NEW_ROOTS = 1;            // new roots from the centre (+1 per boost level)
 
   // [added] moving the light: one 'main route' root grows along with it
   const MOVE_SPEED = 60;                // px/s: faster than this counts as moving (slower = standing still)
@@ -461,6 +469,36 @@ export function createRootsPage() {
       roots.push(reacher);
     });
     if (!reused) flashes.push({ x: light.x, y: light.y, t: now });     // flash only for a new spot
+  }
+
+  // [added] another press on an existing spot: its roots get longer, new branches sprout from inside them,
+  // a few new roots come out of the centre, and the whole spot pulses with light
+  function boostSpot(spot, light) {
+    const decayed = Math.max(0, (spot.boost ?? 0) - (now - (spot.boostedAt ?? now)) / BOOST_DECAY_SECONDS);
+    spot.boost = Math.min(decayed + 1, BOOST_MAX); spot.boostedAt = now;
+    const b = spot.boost, grow = 1 + 0.12 * b;
+    const own = roots.filter((r) => r.spot === spot.id && r.dissolving === undefined && r.points.length > 2);
+    for (const r of own) {                                              // longer
+      r.burstSteps += Math.round(randomBetween(BOOST_LONGER[0], BOOST_LONGER[1]) * grow);
+      r.charge = now;
+    }
+    const inner = Math.min(BOOST_INNER_BRANCHES + Math.round(b), 10);  // new branches from inside the roots
+    for (let k = 0; k < inner && own.length && !isAtPointLimit(); k++) {
+      const r = own[Math.floor(Math.random() * own.length)];
+      const index = Math.floor(randomBetween(0.25, 0.9) * (r.points.length - 1));
+      const a = r.points[index], next = r.points[Math.min(index + 1, r.points.length - 1)];
+      const dir = getAngle(a, next) + (Math.random() < 0.5 ? -1 : 1) * randomBetween(MIN_SPLIT_ANGLE, MAX_SPLIT_ANGLE);
+      const steps = Math.round(randomBetween(4, 10) * grow);
+      roots.push(createRoot(a, dir, { kind: "side", burstSteps: steps, branchLength: steps, parent: r, attachIndex: index, opacity: 1 }));
+    }
+    const fresh = Math.min(BOOST_NEW_ROOTS + Math.round(b * 0.7), 5);        // new roots from the centre
+    const slice = (Math.PI * 2) / fresh, offset = Math.random() * slice;
+    for (let i = 0; i < fresh; i++) {
+      const steps = Math.round(randomBurstSteps() * randomBetween(0.6, 1) * (1 + 0.15 * b));
+      roots.push(createRoot(spot, offset + (i + 0.5) * slice + randomBetween(-0.4, 0.4) * slice,
+        { kind: "planted", burstSteps: steps, branchLength: steps, spot }));
+    }
+    flashes.push({ x: spot.x, y: spot.y, t: now, r: FLASH_RADIUS * (0.6 + 0.1 * b) });
   }
 
   function plantRoots(position) {
@@ -812,6 +850,7 @@ export function createRootsPage() {
       lightSpeed += (v - lightSpeed) * Math.min(1, deltaSeconds * 10);
       if (getDistance(light, prevLight) > 0.5) moveAngle = getAngle(prevLight, light);
     } else lightSpeed = 0;
+    const newPress = Boolean(light) && !prevLight;                      // [added] light just switched on / mouse pressed
     prevLight = light ? { x: light.x, y: light.y } : null;
     const moving = Boolean(light) && lightSpeed > MOVE_SPEED;
     if (!light) leader = null;
@@ -895,6 +934,12 @@ export function createRootsPage() {
       plantRoots(light);
       sproutCooldown = SPROUT_SECONDS;
       return;
+    }
+
+    // [added] a new press on an existing spot makes that spot grow stronger
+    if (newPress && !isAtPointLimit()) {
+      const spot = spots.find((sp) => getDistance(sp, light) < BOOST_RADIUS);
+      if (spot) { boostSpot(spot, light); regrowCooldown = REGROW_SECONDS; sproutCooldown = SPROUT_SECONDS; }
     }
 
     // [added] near or between existing roots: something always grows at the light, and connects
@@ -1013,7 +1058,7 @@ export function createRootsPage() {
     now += Math.min(deltaSeconds, 0.1);                          // [added]
 
     let scaledLight;
-    if (mouseToggle.checked) {                                    // [added] mouse instead of camera
+    if (!cameraToggle.checked) {                                  // [added] mouse unless the camera is switched on
       scaledLight = mouse.down ? { x: mouse.x, y: mouse.y } : null;
       statusText.textContent = scaledLight ? `Mouse light at x ${Math.round(mouse.x)}, y ${Math.round(mouse.y)}` : 'Mouse mode: hold the mouse button down on the growth view';
     } else {
@@ -1069,12 +1114,19 @@ export function createRootsPage() {
   growthCanvas.addEventListener('pointerup', () => { mouse.down = false; });
   growthCanvas.addEventListener('pointercancel', () => { mouse.down = false; });
 
+  // ---- [added] the camera only runs while 'Use camera' is on
+  const stopCamera = () => { if (video.srcObject) { video.srcObject.getTracks().forEach((t) => t.stop()); video.srcObject = null; } reference = null; };
+  cameraToggle.addEventListener('change', () => {
+    if (cameraToggle.checked) { startCamera(); statusText.textContent = 'Flashlight off, then press Calibrate.'; }
+    else stopCamera();
+  });
+
   // ---- [added] show / hide with the style buttons
   return {
     show() {
       if (running) return;
       page.hidden = false; running = true;
-      if (!video.srcObject) startCamera();
+      if (cameraToggle.checked && !video.srcObject) startCamera();
       cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame((time) => { lastFrameTime = time; render(time); });
     },

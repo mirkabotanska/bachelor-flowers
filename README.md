@@ -15,7 +15,8 @@ Switch with the buttons at the top (or keys **1** / **2**):
 
 3. **Tracking**: selection boxes find and follow parts of the flower (panel *3 · Tracking*).
 4. **Roots**: "Growth test 03" – roots grow towards a flashlight seen by the webcam
-   (press *Calibrate* with the flashlight off first). Tick *Use mouse instead of camera* to test with the mouse.
+   Works with the mouse by default (hold the button = light on). Tick *Use camera (flashlight)* for the real thing,
+   then press *Calibrate* with the flashlight off. Pressing the same spot again makes it grow stronger.
    Code: `src/roots/growth.js` (the original code, only wrapped so it runs as page 4).
 
 ## Run it
