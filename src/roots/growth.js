@@ -30,6 +30,10 @@ const MARKUP = `<h1 class="lab__title">Roots – Growth test 03</h1>
         Use mouse instead of camera
       </label>
       <label class="controls__field">
+        <input class="controls__particles" type="checkbox" checked />
+        Dissolve into particles
+      </label>
+      <label class="controls__field">
         Threshold
         <input class="controls__slider" type="range" min="5" max="200" value="70" />
         <output class="controls__value">70</output>
@@ -49,6 +53,7 @@ export function createRootsPage() {
   let running = false;                                           // [added]
   let rafId = 0;                                                 // [added]
   const mouseToggle = page.querySelector('.controls__mouse');    // [added]
+  const particleToggle = page.querySelector('.controls__particles');   // [added]
   const mouse = { x: 0, y: 0, down: false };                     // [added]
 
   const WIDTH = 320;
@@ -58,7 +63,7 @@ export function createRootsPage() {
   const LIGHT_HOLD_SECONDS = 0.2;
 
   const GROWTH_SCALE = 4;
-  const ROOTS_PER_SPOT = 12;                 // [changed] 5 -> 12: fuller from the start
+  const ROOTS_PER_SPOT = 10;                 // [changed] 5 -> 10: fuller from the start
   const STEP_LENGTH = 6;
   const GROW_SPEED = 90;
   const WOBBLE = 0.22;                       // [changed] calmer, wandering lines (image 2)
@@ -66,13 +71,24 @@ export function createRootsPage() {
   const MAX_TURN_FROM_HOME = Math.PI / 3;    // [changed] roots stay in their own direction -> no empty gaps
   const MAX_POINTS = 14000;                  // [changed] more roots and twigs
 
-  const MIN_BURST_STEPS = 12;               // [changed] 25-75 -> 12-32: much shorter roots per press
-  const MAX_BURST_STEPS = 32;
+  const MIN_BURST_STEPS = 8;                // [changed] 25-75 -> 8-20: short roots per press
+  const MAX_BURST_STEPS = 20;
 
   const SPROUT_SECONDS = 3;
   const ROOTS_PER_SPROUT = 2;
 
-  const SHRINK_DELAY_SECONDS = 1.5;         // [changed] 3 -> 1.5: start fading sooner
+  const SHRINK_DELAY_SECONDS = 0.6;         // [changed] 3 -> 0.6: unlit roots start to disappear quickly
+
+  // [added] disappearing: roots dissolve into drifting particles (or just fade, see the checkbox)
+  const DISSOLVE_SECONDS = 0.6;          // how long the line takes to fall apart (tips first)
+  const PARTICLE_EVERY = 1;              // one particle per this many root points
+  const PARTICLE_LIFE_MIN = 0.9;         // seconds
+  const PARTICLE_LIFE_MAX = 2;
+  const PARTICLE_SPEED = 22;             // px/s drift
+  const PARTICLE_RISE = 12;              // px/s upwards
+  const PARTICLE_SIZE = 1.2;             // px
+  const PARTICLE_RANDOMNESS = 0.6;       // 0 = strictly in order, 1 = very scattered timing
+  const ROOT_JITTER = 0.35;              // s: roots don't all start dissolving at the same moment
   const SHRINK_SECONDS = 4;                  // [changed] 9 -> 4: shrink back faster
   const DIM_SECONDS = 5;                     // [changed] 12 -> 5: dim faster
   const DIM_FLOOR = 0.25;
@@ -121,15 +137,27 @@ export function createRootsPage() {
   const CLUSTER_SPACING = 90;           // no new cluster this close to another planting spot
   const CLUSTER_MIN_ROOTS = 3;
   const CLUSTER_MAX_ROOTS = 8;
-  const CLUSTER_MIN_SIZE = 0.45;        // root length compared to a normal planting (random per cluster)
-  const CLUSTER_MAX_SIZE = 1.1;
+  const CLUSTER_MIN_SIZE = 0.35;        // root length compared to a normal planting (random per cluster)
+  const CLUSTER_MAX_SIZE = 0.8;
   const CONNECT_REACH = 375;            // how far a connecting root may reach to find another root
   const MAX_CONNECTORS = 3;             // connecting roots from a new cluster (to different roots)
   const MAX_REACHERS = 2;               // existing roots that send a branch towards the light
-  const REGROW_SECONDS = 0.9;           // while the light stays, something new grows this often
+  const REGROW_SECONDS = 1.4;           // while the light stays, something new grows this often
   const SPOT_REUSE = 40;                // a new cluster this close to another one adds to it
   const CHARGE_SECONDS = 0.9;           // how long a pulse of light runs through connected roots
   const CONNECT_FLASH_RADIUS = 70;
+
+  // [added] moving the light: one 'main route' root grows along with it
+  const MOVE_SPEED = 60;                // px/s: faster than this counts as moving (slower = standing still)
+  const LEAD_GRAB = 160;                // a root tip this close to the light can become the main route
+  const LEAD_LOST = 260;                // if the light gets further than this from the main route, pick a new one
+  const FOLLOW_GAIN = 7;                // how eagerly it catches up (higher = sticks closer to the light)
+  const MAX_FOLLOW_SPEED = 1600;        // px/s
+  const LEADER_STEER = 0.55;            // how sharply it turns towards the light
+  const LEADER_WOBBLE = 0.12;           // a little wiggle so it stays organic
+  const LEADER_TWIG_STEPS = 9;          // length of the side twigs it leaves behind
+  const LEADER_TWIG_MIN_GAP = 10;       // steps between twigs
+  const LEADER_TWIG_MAX_GAP = 26;
 
   const video = page.querySelector(".lab__video");
   const growthCanvas = page.querySelector(".view__canvas--growth");
@@ -165,6 +193,9 @@ export function createRootsPage() {
   let spots = [];                                // [added] planting spots (big plantings + clusters)
   let spotCount = 0;
   let regrowCooldown = 0;                        // [added]
+  let particles = [];                            // [added] dissolving roots
+  let leader = null;                             // [added] the root that follows a moving light
+  let prevLight = null, lightSpeed = 0, moveAngle = 0;
 
   function getBrightness(pixels, pixelIndex) {
     const offset = pixelIndex * 4;
@@ -385,7 +416,7 @@ export function createRootsPage() {
     const spot = reused ?? addSpot(light);
     const size = randomBetween(CLUSTER_MIN_SIZE, CLUSTER_MAX_SIZE);
     // holding still on the same spot adds a few roots each time, a new spot gets a full cluster
-    const count = reused ? Math.round(randomBetween(1, 3)) : Math.round(randomBetween(CLUSTER_MIN_ROOTS, CLUSTER_MAX_ROOTS));
+    const count = reused ? Math.round(randomBetween(1, 2)) : Math.round(randomBetween(CLUSTER_MIN_ROOTS, CLUSTER_MAX_ROOTS));
     const slice = (Math.PI * 2) / count, offset = Math.random() * slice;
     for (let i = 0; i < count; i++) {
       const angle = offset + (i + 0.5) * slice + randomBetween(-0.35, 0.35) * slice;
@@ -463,8 +494,8 @@ export function createRootsPage() {
     return Math.atan2(Math.sin(difference), Math.cos(difference));
   }
 
-  function steerToward(root, target) {
-    root.angle += getAngleDifference(root.angle, getAngle(root.points.at(-1), target)) * STEER;
+  function steerToward(root, target, amount = STEER) {
+    root.angle += getAngleDifference(root.angle, getAngle(root.points.at(-1), target)) * amount;
   }
 
   function limitToHome(root) {
@@ -478,8 +509,8 @@ export function createRootsPage() {
     root.distanceToGrow += distance;
 
     while (root.distanceToGrow >= STEP_LENGTH) {
-      if (target) steerToward(root, target);
-      const wobble = now - root.born < SPARK_SECONDS ? SPARK_WOBBLE : WOBBLE;   // [changed] jagged while it's a spark
+      if (target) steerToward(root, target, root === leader ? LEADER_STEER : STEER);
+      const wobble = root === leader ? LEADER_WOBBLE : now - root.born < SPARK_SECONDS ? SPARK_WOBBLE : WOBBLE;   // [changed]
       root.angle += randomBetween(-wobble, wobble);
 
       if (target) {
@@ -501,7 +532,9 @@ export function createRootsPage() {
       root.stepsUntilSplit--;
       if (root.stepsUntilSplit <= 0) {
         splitBranch(root);
-        root.stepsUntilSplit = randomStepsUntilSplit();
+        root.stepsUntilSplit = root === leader                       // [changed] the main route leaves fewer, short twigs
+          ? Math.round(randomBetween(LEADER_TWIG_MIN_GAP, LEADER_TWIG_MAX_GAP))
+          : randomStepsUntilSplit();
       }
     }
   }
@@ -578,7 +611,80 @@ export function createRootsPage() {
   }
 
   function isGone(root) {
+    if (root.dissolving !== undefined) return now >= root.dissolveEnd;          // [changed]
     return canShrink(root) && root.points.length <= 1;
+  }
+
+  // [added] one particle at a root point, appearing at time `born`
+  function spawnParticle(root, point, born) {
+    const green = smooth((now - point.t - SPARK_SECONDS * 0.5) / TO_GREEN_SECONDS);
+    const a = Math.random() * Math.PI * 2, sp = PARTICLE_SPEED * (0.3 + Math.random());
+    particles.push({
+      x: point.x, y: point.y,
+      vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - PARTICLE_RISE,
+      born,
+      life: randomBetween(PARTICLE_LIFE_MIN, PARTICLE_LIFE_MAX),
+      size: PARTICLE_SIZE * (0.5 + Math.random()),
+      color: mixColor(ELECTRIC_COLOR, GREEN_COLOR, green),
+      alpha: root.opacity,
+    });
+  }
+
+  // [added] instead of shrinking back: dissolve. The oldest parts go first, each root starts at a slightly
+  // different moment, and every point gets some random timing, so it never all happens at once.
+  function dissolveRoot(root) {
+    if (root === leader) return;                                  // the route that follows the light stays (its tail trims itself)
+    const orphaned = root.parent && (root.parent.dissolving !== undefined || !roots.includes(root.parent)   // [added] parent is going/gone
+      || (root.parent.cut ?? 0) > root.attachIndex);                                                      // or its branch point is
+    if (root.dissolving !== undefined || (!canShrink(root) && !orphaned)) return;
+    const pts = root.points, from = root.cut ?? 0, last = pts.length - 1;
+    const start = now + Math.random() * ROOT_JITTER;
+    let tMin = Infinity, tMax = -Infinity;
+    for (let i = from; i <= last; i++) { tMin = Math.min(tMin, pts[i].t); tMax = Math.max(tMax, pts[i].t); }
+    root.dissolving = now;
+    let end = start;
+    for (let i = from; i <= last; i++) {
+      const oldness = tMax > tMin ? (tMax - pts[i].t) / (tMax - tMin) : 0.5;   // 1 = grew first
+      const at = start + (1 - oldness) * DISSOLVE_SECONDS * 0.75 + Math.random() * DISSOLVE_SECONDS * PARTICLE_RANDOMNESS;
+      pts[i].dissolveAt = at;
+      end = Math.max(end, at);
+      if (particleToggle.checked && (i - from) % PARTICLE_EVERY === 0) spawnParticle(root, pts[i], at);
+    }
+    root.dissolveEnd = particleToggle.checked ? end : now + DISSOLVE_SECONDS * 1.5;
+  }
+
+  // [added] a route that follows the light: the parts the light left behind dissolve while you keep moving
+  function trimTrail(root, light) {
+    const pts = root.points;
+    let cut = root.cut ?? 0;
+    for (let i = cut; i < pts.length; i++) if (getDistance(pts[i], light) < LIGHT_REACH) pts[i].lit = now;
+    while (cut < pts.length - 2 && now - (pts[cut].lit ?? pts[cut].t) > SHRINK_DELAY_SECONDS) {
+      if (particleToggle.checked) spawnParticle(root, pts[cut], now + Math.random() * DISSOLVE_SECONDS * PARTICLE_RANDOMNESS);
+      cut++;
+    }
+    root.cut = cut;
+  }
+
+  function updateParticles(deltaSeconds) {
+    particles = particles.filter((q) => now < q.born + q.life);
+    for (const q of particles) {
+      if (now < q.born) continue;
+      q.x += q.vx * deltaSeconds; q.y += q.vy * deltaSeconds;
+      q.vx *= 1 - 0.6 * deltaSeconds; q.vy *= 1 - 0.6 * deltaSeconds;     // slow down
+    }
+  }
+
+  function drawParticles() {
+    for (const q of particles) {
+      if (now < q.born) continue;
+      const k = (now - q.born) / q.life;                                  // 0 -> 1
+      const size = q.size * (1 - k);
+      if (size <= 0.05) continue;
+      growthContext.fillStyle = `rgba(${q.color}, ${q.alpha * (1 - k) * Math.min(1, k * 8)})`;
+      growthContext.beginPath();
+      growthContext.arc(q.x, q.y, size, 0, Math.PI * 2);
+      growthContext.fill();
+    }
   }
 
   function updateRest(light, deltaSeconds) {
@@ -601,6 +707,7 @@ export function createRootsPage() {
     let closest = { root, index: 0, distance: Infinity };
 
     root.points.forEach((point, index) => {
+      if (index < (root.cut ?? 0)) return;                    // [added] that part is already gone
       const distance = getDistance(point, light);
       if (distance < closest.distance) closest = { root, index, distance };
     });
@@ -646,8 +753,48 @@ export function createRootsPage() {
     );
   }
 
+  // [added] pick the root that should grow along with a moving light:
+  // a tip close to the light that points the way the light is moving; otherwise a new branch from the closest root
+  function pickLeader(light) {
+    let best = null;
+    for (const root of roots) {
+      if (root.points.length < 2) continue;
+      const tip = root.points.at(-1);
+      const d = getDistance(tip, light);
+      if (d > LEAD_GRAB) continue;
+      const along = Math.cos(getAngleDifference(root.angle, moveAngle));       // 1 = same direction
+      const score = d - 60 * along;
+      if (!best || score < best.score) best = { root, score };
+    }
+    let chosen = best?.root;
+    if (!chosen) {
+      const near = closestOtherPoint(light, null);
+      if (near && near.distance <= CONNECT_REACH) {
+        const point = near.root.points[near.index];
+        chosen = createRoot(point, getAngle(point, light), { kind: "followed", parent: near.root, attachIndex: near.index, opacity: near.root.opacity });
+        roots.push(chosen);
+      } else {
+        plantConnectingCluster(light);                                         // nothing around: start fresh here
+        return null;
+      }
+    }
+    chosen.branchLength = LEADER_TWIG_STEPS / BRANCH_SHRINK;                   // its side twigs stay short
+    chosen.stepsUntilSplit = Math.round(randomBetween(LEADER_TWIG_MIN_GAP, LEADER_TWIG_MAX_GAP));
+    return chosen;
+  }
+
   function updateRoots(light, deltaSeconds) {
-    const isResting = updateRest(light, deltaSeconds);
+    // [added] how fast and where the light moves
+    if (light && prevLight) {
+      const v = getDistance(light, prevLight) / Math.max(deltaSeconds, 1e-3);
+      lightSpeed += (v - lightSpeed) * Math.min(1, deltaSeconds * 10);
+      if (getDistance(light, prevLight) > 0.5) moveAngle = getAngle(prevLight, light);
+    } else lightSpeed = 0;
+    prevLight = light ? { x: light.x, y: light.y } : null;
+    const moving = Boolean(light) && lightSpeed > MOVE_SPEED;
+    if (!light) leader = null;
+
+    const isResting = updateRest(light, deltaSeconds) && !moving;   // [changed] only really standing still
     branchCooldown = Math.max(0, branchCooldown - deltaSeconds);
     sproutCooldown = Math.max(0, sproutCooldown - deltaSeconds);
 
@@ -656,13 +803,13 @@ export function createRootsPage() {
     // [changed] the roots that grow towards the light are the closest ones from ANOTHER spot
     const activeSpot = spotNear(light);
     const other = light ? closestOtherPoint(light, activeSpot?.id) : null;
-    const followedRoot = other && other.distance <= PLANT_SPACING ? other.root : isWithinSpacing ? closest.root : null;
+    const followedRoot = moving && leader ? leader : other && other.distance <= PLANT_SPACING ? other.root : isWithinSpacing ? closest.root : null;
 
     updateRootTree();
 
     for (const root of roots) {
       updateRootLight(root, root === followedRoot, deltaSeconds);
-      shrinkRoot(root, deltaSeconds);
+      dissolveRoot(root);                          // [changed] was shrinkRoot: dissolve instead of growing back
       updateTaper(root, deltaSeconds);
 
       // [added] connectors follow their target root (it can grow or shrink)
@@ -684,7 +831,23 @@ export function createRootsPage() {
     }
 
     roots = roots.filter((root) => !isGone(root));
+    updateParticles(deltaSeconds);                                         // [added]
     spots = spots.filter((spot) => roots.some((root) => root.spot === spot.id));   // [added]
+
+    // [added] moving: the main route grows along with the light (and nothing else gets in the way)
+    if (moving) {
+      if (!leader || !roots.includes(leader) || getDistance(leader.points.at(-1), light) > LEAD_LOST) leader = pickLeader(light);
+      if (leader) {
+        const d = getDistance(leader.points.at(-1), light);
+        const speed = Math.min(MAX_FOLLOW_SPEED, Math.max(GROW_SPEED, d * FOLLOW_GAIN));
+        if (d > STEP_LENGTH) growRoot(leader, Math.min(speed * deltaSeconds, d), light);   // never past the light
+        leader.opacity = 1;
+        trimTrail(leader, light);                                                // [added]
+      }
+      return;
+    }
+
+    if (leader && light && roots.includes(leader)) trimTrail(leader, light);     // [added] also while standing still
 
     const isFarFromRoots = !closest || closest.distance > LIGHT_REACH;
 
@@ -774,23 +937,29 @@ export function createRootsPage() {
     for (const root of roots) {
       const { points, opacity, taperSteps, depth } = root;
       const lastIndex = points.length - 1;
-      if (lastIndex < 1) continue;
+      const from = root.cut ?? 0;                                     // [added] start of a route may be gone
+      const dissolving = root.dissolving !== undefined;
+      // [added] fade mode: the whole root fades; particle mode: pieces vanish when their particles appear
+      const fade = dissolving && !particleToggle.checked ? 1 - Math.min((now - root.dissolving) / (DISSOLVE_SECONDS * 1.5), 1) : 1;
+      if (lastIndex - from < 1) continue;
       const taperStart = Math.max(0, Math.ceil(lastIndex - taperSteps));
       const baseWidth = LINE_WIDTH * Math.pow(0.72, depth);
 
-      for (let i = 0; i < lastIndex; i += CHUNK) {
+      for (let i = from; i < lastIndex; i += CHUNK) {
         const j = Math.min(i + CHUNK, lastIndex);
+        if (dissolving && particleToggle.checked && now >= Math.min(points[i].dissolveAt ?? Infinity, points[j].dissolveAt ?? Infinity)) continue;
         const mid = (i + j) / 2;
         const taper = mid > taperStart ? (lastIndex - mid) / Math.max(taperSteps, 1) : 1;
         const age = now - points[i].t;
         const pulse = Math.exp(-(now - root.charge) / CHARGE_SECONDS);           // [added] connection pulse
         const green = smooth((age - SPARK_SECONDS * 0.5) / TO_GREEN_SECONDS) * (1 - pulse);
         const flicker = green < 0.6 ? 0.7 + 0.3 * Math.random() : 1;              // electric flicker
-        const alpha = opacity * Math.min(Math.max(taper, 0), 1) * flicker * (1.25 - 0.25 * green) * (1 + 0.6 * pulse);
+        const alpha = fade * opacity * Math.min(Math.max(taper, 0), 1) * flicker * (1.25 - 0.25 * green) * (1 + 0.6 * pulse);
         const width = baseWidth * (0.45 + 0.55 * (1 - mid / Math.max(lastIndex, 1)));
         strokePiece(points, i, j, Math.max(width, 0.5), mixColor(ELECTRIC_COLOR, GREEN_COLOR, green), Math.min(alpha, 1));
       }
     }
+    drawParticles();                                                        // [added]
     growthContext.globalCompositeOperation = "source-over";
   }
 
