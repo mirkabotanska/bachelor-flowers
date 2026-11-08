@@ -58,39 +58,39 @@ export function createRootsPage() {
   const LIGHT_HOLD_SECONDS = 0.2;
 
   const GROWTH_SCALE = 4;
-  const ROOTS_PER_SPOT = 5;
+  const ROOTS_PER_SPOT = 12;                 // [changed] 5 -> 12: fuller from the start
   const STEP_LENGTH = 6;
   const GROW_SPEED = 90;
-  const WOBBLE = 0.35;
+  const WOBBLE = 0.22;                       // [changed] calmer, wandering lines (image 2)
   const STEER = 0.35;
-  const MAX_TURN_FROM_HOME = Math.PI / 2;
-  const MAX_POINTS = 6000;
+  const MAX_TURN_FROM_HOME = Math.PI / 3;    // [changed] roots stay in their own direction -> no empty gaps
+  const MAX_POINTS = 14000;                  // [changed] more roots and twigs
 
-  const MIN_BURST_STEPS = 25;
-  const MAX_BURST_STEPS = 70;
+  const MIN_BURST_STEPS = 12;               // [changed] 25-75 -> 12-32: much shorter roots per press
+  const MAX_BURST_STEPS = 32;
 
   const SPROUT_SECONDS = 3;
   const ROOTS_PER_SPROUT = 2;
 
-  const SHRINK_DELAY_SECONDS = 3;
-  const SHRINK_SECONDS = 9;
-  const DIM_SECONDS = 12;
+  const SHRINK_DELAY_SECONDS = 1.5;         // [changed] 3 -> 1.5: start fading sooner
+  const SHRINK_SECONDS = 4;                  // [changed] 9 -> 4: shrink back faster
+  const DIM_SECONDS = 5;                     // [changed] 12 -> 5: dim faster
   const DIM_FLOOR = 0.25;
   const TAPER_STEPS = 18;
   const TAPER_EASE_SPEED = 8;
   const BRIGHTEN_SECONDS = 1.5;
 
-  const MIN_STEPS_BETWEEN_SPLITS = 12;
-  const MAX_STEPS_BETWEEN_SPLITS = 30;
+  const MIN_STEPS_BETWEEN_SPLITS = 8;        // [changed] branch more often (image 1)
+  const MAX_STEPS_BETWEEN_SPLITS = 20;
   const MIN_SPLIT_ANGLE = 0.5;
   const MAX_SPLIT_ANGLE = 1.1;
   const BRANCH_SHRINK = 0.6;
-  const MIN_BRANCH_STEPS = 8;
+  const MIN_BRANCH_STEPS = 3;                // [changed] allow small twigs
 
   const LIGHT_REACH = 120;
   const PLANT_SPACING = 250; // keep this over 2x LIGHT_REACH or two bursts can grow at once
 
-  const REST_SECONDS = 0.4;
+  const REST_SECONDS = 0;                    // [changed] 0.4 -> 0: roots appear as soon as the light is there
   const REST_MOVEMENT = 30;
 
   const TIP_STEPS = 10;
@@ -102,6 +102,34 @@ export function createRootsPage() {
   const GLOW_STRENGTH = 0.22;
   const GLOW_IN_SECONDS = 0.1;
   const GLOW_OUT_SECONDS = 0.6;
+
+  // [added] look: electric discharge first, then it calms down into green roots
+  const SPARK_SECONDS = 1.2;            // first moments of a new root: faster and more jagged
+  const SPARK_SPEED = 2.4;              // speed multiplier during the spark
+  const SPARK_WOBBLE = 0.55;            // jaggedness during the spark
+  const TO_GREEN_SECONDS = 2.5;         // how long a part of a root stays 'electric' before it turns green
+  const ELECTRIC_COLOR = [205, 225, 255];
+  const GREEN_COLOR = [150, 235, 170];
+  const LINE_WIDTH = 1.6;               // trunk width; branches get thinner
+  const GLOW_WIDTH = 5;                 // soft glow around each line (x line width)
+  const GLOW_ALPHA = 0.12;
+  const CHUNK = 4;                      // points per drawn piece (colour/width change along a root)
+  const FLASH_SECONDS = 0.9;            // bright flash where roots are planted
+  const FLASH_RADIUS = 140;
+
+  // [added] light near existing roots: a smaller cluster appears right at the light and reaches out to connect
+  const CLUSTER_SPACING = 90;           // no new cluster this close to another planting spot
+  const CLUSTER_MIN_ROOTS = 3;
+  const CLUSTER_MAX_ROOTS = 8;
+  const CLUSTER_MIN_SIZE = 0.45;        // root length compared to a normal planting (random per cluster)
+  const CLUSTER_MAX_SIZE = 1.1;
+  const CONNECT_REACH = 375;            // how far a connecting root may reach to find another root
+  const MAX_CONNECTORS = 3;             // connecting roots from a new cluster (to different roots)
+  const MAX_REACHERS = 2;               // existing roots that send a branch towards the light
+  const REGROW_SECONDS = 0.9;           // while the light stays, something new grows this often
+  const SPOT_REUSE = 40;                // a new cluster this close to another one adds to it
+  const CHARGE_SECONDS = 0.9;           // how long a pulse of light runs through connected roots
+  const CONNECT_FLASH_RADIUS = 70;
 
   const video = page.querySelector(".lab__video");
   const growthCanvas = page.querySelector(".view__canvas--growth");
@@ -132,6 +160,11 @@ export function createRootsPage() {
   let branchCooldown = 0;
   let sproutCooldown = 0;
   let glow = { x: 0, y: 0, opacity: 0 };
+  let now = 0;                                  // [added] seconds since the page started
+  let flashes = [];                              // [added] where roots were planted
+  let spots = [];                                // [added] planting spots (big plantings + clusters)
+  let spotCount = 0;
+  let regrowCooldown = 0;                        // [added]
 
   function getBrightness(pixels, pixelIndex) {
     const offset = pixelIndex * 4;
@@ -255,10 +288,18 @@ export function createRootsPage() {
       parent = null,
       attachIndex = 0,
       homeAngle = angle,
+      spot = null,
     },
   ) {
     return {
-      points: [{ x, y }],
+      points: [{ x, y, t: now }],                   // [changed] points remember when they grew
+      born: now,                                    // [added]
+      depth: parent ? parent.depth + 1 : 0,          // [added] branches are thinner
+      spot: spot ? spot.id : parent ? parent.spot : 0, // [added] which planting spot it belongs to
+      target: null,                                  // [added] connecting roots grow towards this point
+      targetRoot: null,                              // [added] ...on this root
+      targetIndex: 0,
+      charge: -10,                                   // [added] last time a pulse of light ran through it
       angle,
       homeAngle,
       taperSteps: TAPER_STEPS,
@@ -284,14 +325,104 @@ export function createRootsPage() {
     const slice = (Math.PI * 2) / count;
 
     for (let i = 0; i < count; i++) {
-      const angle = i * slice + randomBetween(0, slice);
+      const angle = (i + 0.5) * slice + randomBetween(-0.35, 0.35) * slice;   // [changed] evenly around, not symmetric
       const burstSteps = randomBurstSteps();
       roots.push(createRoot(position, angle, { ...options, burstSteps, branchLength: burstSteps }));
     }
   }
 
+  function addSpot({ x, y }) {                                          // [added]
+    const spot = { x, y, id: ++spotCount };
+    spots.push(spot);
+    return spot;
+  }
+
+  function spotNear(light) {                                           // [added]
+    return light ? spots.find((spot) => getDistance(spot, light) < CLUSTER_SPACING) : null;
+  }
+
+  // [added] closest root point that does NOT belong to the spot at the light
+  function closestOtherPoint(light, excludeSpotId, excludeRoot = null) {
+    let closest = null;
+    for (const root of roots) {
+      if (root === excludeRoot || (excludeSpotId && root.spot === excludeSpotId)) continue;
+      const point = findClosestPoint(root, light);
+      if (!closest || point.distance < closest.distance) closest = point;
+    }
+    return closest;
+  }
+
+  // [added] the closest points on up to `count` different roots (not from the given spot), within reach
+  function nearbyRoots(light, excludeSpotId, count) {
+    const found = [];
+    for (const root of roots) {
+      if (excludeSpotId && root.spot === excludeSpotId) continue;
+      const point = findClosestPoint(root, light);
+      if (point.distance <= CONNECT_REACH) found.push(point);
+    }
+    found.sort((a, b) => a.distance - b.distance);
+    const picked = [], usedSpots = new Set();
+    for (const p of found) {                                    // prefer different spots, then anything
+      if (picked.length >= count) break;
+      if (!usedSpots.has(p.root.spot)) { picked.push(p); usedSpots.add(p.root.spot); }
+    }
+    for (const p of found) { if (picked.length >= count) break; if (!picked.includes(p)) picked.push(p); }
+    return picked;
+  }
+
+  function aimAt(root, targetRoot, targetIndex) {
+    root.targetRoot = targetRoot; root.targetIndex = targetIndex;
+    const p = targetRoot.points[Math.min(targetIndex, targetRoot.points.length - 1)];
+    root.target = { x: p.x, y: p.y };
+  }
+
+  // [added] a cluster at the light (random size) that grows into the roots around it:
+  //  - its own roots spread out
+  //  - 1-3 connecting roots grow from the light onto nearby roots
+  //  - 1-2 nearby roots send a branch back towards the light
+  function plantConnectingCluster(light) {
+    const reused = spots.find((sp) => getDistance(sp, light) < SPOT_REUSE);
+    const spot = reused ?? addSpot(light);
+    const size = randomBetween(CLUSTER_MIN_SIZE, CLUSTER_MAX_SIZE);
+    // holding still on the same spot adds a few roots each time, a new spot gets a full cluster
+    const count = reused ? Math.round(randomBetween(1, 3)) : Math.round(randomBetween(CLUSTER_MIN_ROOTS, CLUSTER_MAX_ROOTS));
+    const slice = (Math.PI * 2) / count, offset = Math.random() * slice;
+    for (let i = 0; i < count; i++) {
+      const angle = offset + (i + 0.5) * slice + randomBetween(-0.35, 0.35) * slice;
+      const burstSteps = Math.max(3, Math.round(randomBurstSteps() * size));
+      roots.push(createRoot(light, angle, { kind: "planted", burstSteps, branchLength: burstSteps, spot }));
+    }
+    const near = nearbyRoots(light, spot.id, MAX_CONNECTORS);
+    near.forEach(({ root, index, distance }, k) => {
+      if (k > 0 && Math.random() < 0.35) return;                              // variety: sometimes fewer
+      if (distance < STEP_LENGTH * 2) { root.charge = now; return; }          // already touching: just light it up
+      const point = root.points[index];
+      const steps = Math.ceil(distance / STEP_LENGTH) + 6;
+      const connector = createRoot(light, getAngle(light, point), {
+        kind: "connector", burstSteps: steps, branchLength: Math.min(steps, MAX_BURST_STEPS), spot,
+      });
+      aimAt(connector, root, index);
+      roots.push(connector);
+    });
+    // existing roots reach back towards the light, so both sides grow into each other
+    near.slice(0, MAX_REACHERS).forEach(({ root, index, distance }) => {
+      if (distance < BRANCH_DISTANCE * 0.5) return;
+      const point = root.points[index];
+      const steps = Math.ceil(distance / STEP_LENGTH) + 4;
+      const reacher = createRoot(point, getAngle(point, light), {
+        kind: "connector", burstSteps: steps, branchLength: Math.min(steps, MAX_BURST_STEPS),
+        parent: root, attachIndex: index, opacity: root.opacity,
+      });
+      reacher.target = { x: light.x, y: light.y };
+      roots.push(reacher);
+    });
+    if (!reused) flashes.push({ x: light.x, y: light.y, t: now });     // flash only for a new spot
+  }
+
   function plantRoots(position) {
-    spreadRoots(position, ROOTS_PER_SPOT, { kind: "planted" });
+    const spot = addSpot(position);                                    // [added]
+    spreadRoots(position, ROOTS_PER_SPOT, { kind: "planted", spot });
+    flashes.push({ x: position.x, y: position.y, t: now });   // [added]
   }
 
   function sproutRoots({ root, index }) {
@@ -348,7 +479,8 @@ export function createRootsPage() {
 
     while (root.distanceToGrow >= STEP_LENGTH) {
       if (target) steerToward(root, target);
-      root.angle += randomBetween(-WOBBLE, WOBBLE);
+      const wobble = now - root.born < SPARK_SECONDS ? SPARK_WOBBLE : WOBBLE;   // [changed] jagged while it's a spark
+      root.angle += randomBetween(-wobble, wobble);
 
       if (target) {
         root.homeAngle = root.angle;
@@ -360,6 +492,7 @@ export function createRootsPage() {
       root.points.push({
         x: tip.x + Math.cos(root.angle) * STEP_LENGTH,
         y: tip.y + Math.sin(root.angle) * STEP_LENGTH,
+        t: now,                                     // [added]
       });
 
       root.distanceToGrow -= STEP_LENGTH;
@@ -375,10 +508,11 @@ export function createRootsPage() {
 
   function getOwnGrowSpeed(root, light) {
     if (root.burstSteps === 0) return 0;
+    const speed = now - root.born < SPARK_SECONDS ? GROW_SPEED * SPARK_SPEED : GROW_SPEED;   // [added] fast spark
 
-    if (root.kind === "side") return GROW_SPEED;
+    if (root.kind === "side" || root.kind === "connector") return speed;   // [changed] connectors keep growing
 
-    return light && getDistance(root.points[0], light) < LIGHT_REACH ? GROW_SPEED : 0;
+    return light && getDistance(root.points[0], light) < LIGHT_REACH ? speed : 0;
   }
 
   function updateRootLight(root, isFollowing, deltaSeconds) {
@@ -450,6 +584,7 @@ export function createRootsPage() {
   function updateRest(light, deltaSeconds) {
     if (!light) {
       rest = null;
+      regrowCooldown = 0;                                       // [added] a new press grows right away
       return false;
     }
 
@@ -518,7 +653,10 @@ export function createRootsPage() {
 
     const closest = measureLight(light);
     const isWithinSpacing = closest && closest.distance <= PLANT_SPACING;
-    const followedRoot = isWithinSpacing ? closest.root : null;
+    // [changed] the roots that grow towards the light are the closest ones from ANOTHER spot
+    const activeSpot = spotNear(light);
+    const other = light ? closestOtherPoint(light, activeSpot?.id) : null;
+    const followedRoot = other && other.distance <= PLANT_SPACING ? other.root : isWithinSpacing ? closest.root : null;
 
     updateRootTree();
 
@@ -527,11 +665,26 @@ export function createRootsPage() {
       shrinkRoot(root, deltaSeconds);
       updateTaper(root, deltaSeconds);
 
+      // [added] connectors follow their target root (it can grow or shrink)
+      if (root.targetRoot) {
+        if (!roots.includes(root.targetRoot) || root.targetRoot.points.length < 2) { root.targetRoot = null; root.target = null; }
+        else { const tp = root.targetRoot.points[Math.min(root.targetIndex, root.targetRoot.points.length - 1)]; root.target = { x: tp.x, y: tp.y }; }
+      }
       const speed = getOwnGrowSpeed(root, light);
-      if (speed > 0) growRoot(root, speed * deltaSeconds);
+      if (speed > 0) growRoot(root, speed * deltaSeconds, root.target);   // [changed] connectors steer to their target
+      if (root.target && getDistance(root.points.at(-1), root.target) < STEP_LENGTH * 1.8) {
+        root.points.push({ x: root.target.x, y: root.target.y, t: now });   // [added] snap on: the lines really join
+        root.burstSteps = 0;
+        root.charge = now;                                                // a pulse of light runs through both
+        if (root.targetRoot) root.targetRoot.charge = now;
+        if (root.parent) root.parent.charge = now;
+        flashes.push({ x: root.target.x, y: root.target.y, t: now, r: CONNECT_FLASH_RADIUS });
+        root.target = null; root.targetRoot = null;
+      }
     }
 
     roots = roots.filter((root) => !isGone(root));
+    spots = spots.filter((spot) => roots.some((root) => root.spot === spot.id));   // [added]
 
     const isFarFromRoots = !closest || closest.distance > LIGHT_REACH;
 
@@ -541,6 +694,14 @@ export function createRootsPage() {
       return;
     }
 
+    // [added] near or between existing roots: something always grows at the light, and connects
+    regrowCooldown = Math.max(0, regrowCooldown - deltaSeconds);
+    if (isResting && regrowCooldown === 0 && !isAtPointLimit()) {
+      plantConnectingCluster(light);
+      regrowCooldown = REGROW_SECONDS;
+      sproutCooldown = SPROUT_SECONDS;
+    }
+
     if (!isWithinSpacing) return;
 
     if (isResting && closest.distance <= BRANCH_DISTANCE && sproutCooldown === 0 && !isAtPointLimit()) {
@@ -548,7 +709,7 @@ export function createRootsPage() {
       sproutCooldown = SPROUT_SECONDS;
     }
 
-    followLight(closest, light, deltaSeconds);
+    followLight(other && other.distance <= PLANT_SPACING ? other : closest, light, deltaSeconds);   // [changed]
   }
 
   function updateGlow(light, deltaSeconds) {
@@ -573,34 +734,71 @@ export function createRootsPage() {
     growthContext.fill();
   }
 
-  function strokePoints(points, opacity) {
-    growthContext.globalAlpha = opacity;
+  // [changed] drawing: glowing lines, electric -> green over time, thinner towards tips and on branches
+  const mixColor = (a, b, k) => a.map((v, i) => Math.round(v + (b[i] - v) * k)).join(", ");
+  const smooth = (x) => { const c = Math.min(Math.max(x, 0), 1); return c * c * (3 - 2 * c); };
+
+  function strokePiece(points, from, to, width, color, alpha) {
     growthContext.beginPath();
-    points.forEach(({ x, y }) => growthContext.lineTo(x, y));
+    growthContext.moveTo(points[from].x, points[from].y);
+    for (let i = from + 1; i <= to; i++) growthContext.lineTo(points[i].x, points[i].y);
+    growthContext.strokeStyle = `rgba(${color}, ${alpha * GLOW_ALPHA})`;
+    growthContext.lineWidth = width * GLOW_WIDTH;
+    growthContext.stroke();
+    growthContext.strokeStyle = `rgba(${color}, ${alpha})`;
+    growthContext.lineWidth = width;
     growthContext.stroke();
   }
 
+  function drawFlashes() {
+    flashes = flashes.filter((f) => now - f.t < 6);
+    for (const f of flashes) {
+      const k = Math.exp(-(now - f.t) / FLASH_SECONDS) * 0.85 + 0.15 * Math.max(0, 1 - (now - f.t) / 6);
+      const R = f.r ?? FLASH_RADIUS;
+      const g = growthContext.createRadialGradient(f.x, f.y, 0, f.x, f.y, R);
+      g.addColorStop(0, `rgba(235, 242, 255, ${0.55 * k})`);
+      g.addColorStop(0.25, `rgba(170, 200, 255, ${0.18 * k})`);
+      g.addColorStop(1, "rgba(150, 190, 255, 0)");
+      growthContext.fillStyle = g;
+      growthContext.fillRect(f.x - R, f.y - R, R * 2, R * 2);
+    }
+  }
+
   function drawRoots() {
-    growthContext.strokeStyle = "#b9f5c8";
-    growthContext.lineWidth = 2;
     growthContext.lineJoin = "round";
+    growthContext.lineCap = "round";
+    growthContext.globalAlpha = 1;
+    growthContext.globalCompositeOperation = "lighter";      // overlapping light adds up, like the references
+    drawFlashes();
 
-    for (const { points, opacity, taperSteps } of roots) {
+    for (const root of roots) {
+      const { points, opacity, taperSteps, depth } = root;
       const lastIndex = points.length - 1;
+      if (lastIndex < 1) continue;
       const taperStart = Math.max(0, Math.ceil(lastIndex - taperSteps));
+      const baseWidth = LINE_WIDTH * Math.pow(0.72, depth);
 
-      strokePoints(points.slice(0, taperStart + 1), opacity);
-
-      for (let i = taperStart; i < lastIndex; i++) {
-        strokePoints([points[i], points[i + 1]], (opacity * (lastIndex - i)) / taperSteps);
+      for (let i = 0; i < lastIndex; i += CHUNK) {
+        const j = Math.min(i + CHUNK, lastIndex);
+        const mid = (i + j) / 2;
+        const taper = mid > taperStart ? (lastIndex - mid) / Math.max(taperSteps, 1) : 1;
+        const age = now - points[i].t;
+        const pulse = Math.exp(-(now - root.charge) / CHARGE_SECONDS);           // [added] connection pulse
+        const green = smooth((age - SPARK_SECONDS * 0.5) / TO_GREEN_SECONDS) * (1 - pulse);
+        const flicker = green < 0.6 ? 0.7 + 0.3 * Math.random() : 1;              // electric flicker
+        const alpha = opacity * Math.min(Math.max(taper, 0), 1) * flicker * (1.25 - 0.25 * green) * (1 + 0.6 * pulse);
+        const width = baseWidth * (0.45 + 0.55 * (1 - mid / Math.max(lastIndex, 1)));
+        strokePiece(points, i, j, Math.max(width, 0.5), mixColor(ELECTRIC_COLOR, GREEN_COLOR, green), Math.min(alpha, 1));
       }
     }
+    growthContext.globalCompositeOperation = "source-over";
   }
 
   function render(time) {
     if (!running) return;                                         // [added] page hidden
     const deltaSeconds = (time - lastFrameTime) / 1000;
     lastFrameTime = time;
+    now += Math.min(deltaSeconds, 0.1);                          // [added]
 
     let scaledLight;
     if (mouseToggle.checked) {                                    // [added] mouse instead of camera
