@@ -220,7 +220,8 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   let regrowCooldown = 0;                        // [added]
   let particles = [];                            // [added] dissolving roots
   let flowers = null;                            // [added] 3D layer with flowers + leaves (made when the page opens)
-  let pendingLeaves = [];                        // [added] leaves appear a moment after roots are planted
+  let pendingLeaves = [];
+  let pendingBranchLeaves = [];                  // [v2] leaves along roots that turned green                        // [added] leaves appear a moment after roots are planted
   const FLOWER_ON_CONNECT = 0.85;                // chance that flowers bloom where two roots connect
   const FLOWERS_ON_CONNECT = [2, 4];             // ...a small group of this many smaller flowers
   const FLOWERS_AT_BOOST = [1, 2];
@@ -231,6 +232,21 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   const LEAVES_PER_SPOT = [1, 3];
   const LEAF_CHANCE = 0.65;                      // chance that a new spot gets leaves at all
   const ROSETTE_CHANCE = 0.3;                    // ...a small leaf cluster instead of single leaves off a root
+
+  // [added v2] electric -> nature: a root starts as electricity; when the light stays on it, it turns green,
+  // its line smooths out, gets a bit thicker and calmer, and leaves grow along it. Roots that are only lit
+  // for a moment stay electric (and dissolve like before).
+  const NATURE_DELAY = 0.8;                      // s: this long it is pure electricity
+  const NATURE_SECONDS = 2.5;                    // s of light after that until it is fully 'nature'
+  const NATURE_FROM_PARENT = 0.5;                // new branches of a green root start this far along (0 = electric again)
+  const NATURE_SMOOTH = 3;                       // how much the line smooths out (points on each side)
+  const NATURE_WIDTH = 0.5;                      // lines get up to 50% thicker
+  const NATURE_GLOW = 0.5;                       // ...and their electric glow is halved
+  const BRANCH_LEAF_AT = 0.6;                    // nature level when leaves start growing on a root
+  const BRANCH_LEAF_EVERY = 22;                  // points between leaves along a root (a point is 6 px)
+  const BRANCH_LEAF_MAX = 3;                     // leaves per root at most
+  const BRANCH_LEAF_SCALE = [0.5, 0.8];          // they're smaller than the leaves at a spot
+  const BRANCH_LEAF_SPREAD = 1.6;                // s: they don't all appear at once
   const LEAF_ON_ROUTE_CHANCE = 0.12;             // chance of a leaf at a fork when drawing a route slowly
   const alive = (r) => roots.includes(r) && r.dissolving === undefined;
   let leader = null;                             // [added] the root that follows a moving light
@@ -382,6 +398,8 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
       points: [{ x, y, t: now }],                   // [changed] points remember when they grew
       born: now,                                    // [added]
       depth: parent ? parent.depth + 1 : 0,          // [added] branches are thinner
+      nature: parent ? (parent.nature ?? 0) * NATURE_FROM_PARENT : 0,   // [v2] 0 = electricity, 1 = green and smooth
+      litTime: 0,
       spot: spot ? spot.id : parent ? parent.spot : 0, // [added] which planting spot it belongs to
       target: null,                                  // [added] connecting roots grow towards this point
       targetRoot: null,                              // [added] ...on this root
@@ -512,6 +530,27 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   // a few new roots come out of the centre, and the whole spot pulses with light
   function spotAlive(spot) {                                          // [added]
     return spots.includes(spot) && roots.some((r) => r.spot === spot.id && r.dissolving === undefined);
+  }
+
+  // [v2] leaves along a root that has turned green: spaced out, branching off to either side
+  function planBranchLeaves(root) {
+    root.leavesPlanned = true;
+    const n = Math.min(BRANCH_LEAF_MAX, Math.floor(root.points.length / BRANCH_LEAF_EVERY));
+    for (let k = 0; k < n; k++) {
+      const index = Math.floor(root.points.length * (0.3 + 0.6 * (k + Math.random() * 0.8) / n));
+      pendingBranchLeaves.push({ at: now + Math.random() * BRANCH_LEAF_SPREAD, root, index });
+    }
+  }
+  function growBranchLeaves() {
+    if (!flowers) return;
+    const due = pendingBranchLeaves.filter((l) => now >= l.at);
+    pendingBranchLeaves = pendingBranchLeaves.filter((l) => now < l.at);
+    for (const { root, index } of due) {
+      if (!alive(root) || index >= root.points.length - 1 || (root.cut ?? 0) > index) continue;
+      const pt = root.points[index], next = root.points[index + 1];
+      const dir = getAngle(pt, next) + (Math.random() < 0.5 ? -1 : 1) * randomBetween(0.5, 1.1);
+      flowers.tryLeaves(pt.x, pt.y, () => alive(root) && (root.cut ?? 0) <= index, dir, randomBetween(...BRANCH_LEAF_SCALE), 30);
+    }
   }
 
   // [added] put 1-2 leaf clusters on the roots of a spot
@@ -673,6 +712,9 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
     root.isLit = isFollowing || root.lightDistance < LIGHT_REACH || Boolean(root.parent?.isLit);
 
     if (root.isLit) {
+      root.litTime += deltaSeconds;                                  // [v2] light stays -> it turns into nature
+      if (root.litTime > NATURE_DELAY) root.nature = Math.min(1, root.nature + deltaSeconds / NATURE_SECONDS);
+      if (root.nature >= BRANCH_LEAF_AT && !root.leavesPlanned) planBranchLeaves(root);
       root.opacity = Math.min(1, root.opacity + deltaSeconds / BRIGHTEN_SECONDS);
       root.unlitSeconds = 0;
       root.shrinkSpeed = 0;
@@ -921,6 +963,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   // planting / boosting / following (after). All roots are grown, dimmed and dissolved once in between.
   function updateRoots(lights, deltaSeconds) {
     growLeaves();                                                      // [added]
+    growBranchLeaves();                                                // [v2]
     for (const id of [...lightStates.keys()]) if (!lights.some((l) => l.id === id)) lightStates.delete(id);   // that light went off
     const per = [];
     const nearest = new Map();                                         // root -> distance to the closest light
@@ -1106,16 +1149,37 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   const mixColor = (a, b, k) => a.map((v, i) => Math.round(v + (b[i] - v) * k)).join(", ");
   const smooth = (x) => { const c = Math.min(Math.max(x, 0), 1); return c * c * (3 - 2 * c); };
 
-  function strokePiece(points, from, to, width, color, alpha) {
+  function strokePiece(points, from, to, width, color, alpha, glowAlpha = GLOW_ALPHA) {
     growthContext.beginPath();
     growthContext.moveTo(points[from].x, points[from].y);
     for (let i = from + 1; i <= to; i++) growthContext.lineTo(points[i].x, points[i].y);
-    growthContext.strokeStyle = `rgba(${color}, ${alpha * GLOW_ALPHA})`;
+    growthContext.strokeStyle = `rgba(${color}, ${alpha * glowAlpha})`;
     growthContext.lineWidth = width * GLOW_WIDTH;
     growthContext.stroke();
     growthContext.strokeStyle = `rgba(${color}, ${alpha})`;
     growthContext.lineWidth = width;
     growthContext.stroke();
+  }
+
+  // [v2] the line as it is drawn: the more 'nature' a root is, the smoother (moving average of its points).
+  // It starts where its parent's drawn line is, so branches stay attached. The tip stays at the real tip.
+  function smoothLine(root, cache) {
+    const pts = root.points, n = pts.length, k = (root.nature ?? 0);
+    if (k < 0.01 || n < 3) { cache.set(root, pts); return pts; }
+    const parentLine = root.parent && cache.get(root.parent);
+    const start = parentLine?.[root.attachIndex] ?? pts[0];
+    const out = new Array(n);
+    out[0] = { x: pts[0].x + (start.x - pts[0].x), y: pts[0].y + (start.y - pts[0].y) };
+    for (let i = 1; i < n; i++) {
+      if (i === n - 1) { out[i] = pts[i]; break; }
+      let sx = 0, sy = 0, c = 0;
+      for (let j = Math.max(0, i - NATURE_SMOOTH); j <= Math.min(n - 1, i + NATURE_SMOOTH); j++) {
+        const q = j === 0 ? out[0] : pts[j]; sx += q.x; sy += q.y; c++;
+      }
+      out[i] = { x: pts[i].x + (sx / c - pts[i].x) * k, y: pts[i].y + (sy / c - pts[i].y) * k };
+    }
+    cache.set(root, out);
+    return out;
   }
 
   function drawFlashes() {
@@ -1139,8 +1203,12 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
     growthContext.globalCompositeOperation = "lighter";      // overlapping light adds up, like the references
     drawFlashes();
 
+    const smoothed = new Map();                                             // [v2]
     for (const root of roots) {
-      const { points, opacity, taperSteps, depth } = root;
+      const { opacity, taperSteps, depth } = root;
+      const points = root.points;
+      const line = smoothLine(root, smoothed);                              // [v2] where the line is drawn
+      const nature = root.nature ?? 0;
       const lastIndex = points.length - 1;
       const from = Math.min(root.visibleFrom ?? 0, root.cut ?? 0);   // [added] start of a route may be (fading) gone
       const dissolving = root.dissolving !== undefined;
@@ -1160,11 +1228,12 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
         const taper = mid > taperStart ? (lastIndex - mid) / Math.max(taperSteps, 1) : 1;
         const age = now - points[i].t;
         const pulse = Math.exp(-(now - root.charge) / CHARGE_SECONDS);           // [added] connection pulse
-        const green = smooth((age - SPARK_SECONDS * 0.5) / TO_GREEN_SECONDS) * (1 - pulse);
+        const green = smooth((age - SPARK_SECONDS * 0.5) / TO_GREEN_SECONDS) * nature * (1 - pulse);   // [v2] only when the light stayed
         const flicker = green < 0.6 ? 0.7 + 0.3 * Math.random() : 1;              // electric flicker
         const alpha = pieceFade * fade * opacity * Math.min(Math.max(taper, 0), 1) * flicker * (1.25 - 0.25 * green) * (1 + 0.6 * pulse);
-        const width = baseWidth * (0.45 + 0.55 * (1 - mid / Math.max(lastIndex, 1)));
-        strokePiece(points, i, j, Math.max(width, 0.5), mixColor(ELECTRIC_COLOR, GREEN_COLOR, green), Math.min(alpha, 1));
+        const width = baseWidth * (0.45 + 0.55 * (1 - mid / Math.max(lastIndex, 1))) * (1 + NATURE_WIDTH * nature);
+        strokePiece(line, i, j, Math.max(width, 0.5), mixColor(ELECTRIC_COLOR, GREEN_COLOR, green), Math.min(alpha, 1),
+          GLOW_ALPHA * (1 - NATURE_GLOW * nature));
       }
     }
     drawParticles();                                                        // [added]

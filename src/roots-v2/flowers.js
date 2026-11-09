@@ -17,7 +17,7 @@ import { uniforms, cloneUniforms } from '../lily/materials.js';
 // for how many, how big and how fast – change them here.
 export const FLOWER_SETTINGS = {
   MAX_FLOWERS: 14,
-  MAX_LEAVES: 12,
+  MAX_LEAVES: 40,                 // [v2] 12 -> 40: leaves also grow along roots that stay lit
   FLOWER_SIZE: [50, 75],          // px per flower unit (a petal is about 1 unit long)
   LEAF_SIZE: [34, 52],
   SIDE_VIEW_CHANCE: 0.5,          // share of flowers seen from the side / at an angle (with stem + leaves)
@@ -169,8 +169,9 @@ export class RootFlowers {
   }
 
   // dir (canvas angle, radians): leaves branch off a root in that direction and lie flat; without dir: a small rosette
-  tryLeaves(x, y, anchor, dir = null) {
-    if (this.count('leaf') >= this.S.MAX_LEAVES || !this.#free(x, y, 'leaf', this.S.LEAF_MIN_DISTANCE)) return false;
+  // [v2] scale: smaller leaves along the branches; minDistance: how close to other leaves it may be
+  tryLeaves(x, y, anchor, dir = null, scale = 1, minDistance = this.S.LEAF_MIN_DISTANCE) {
+    if (this.count('leaf') >= this.S.MAX_LEAVES || !this.#free(x, y, 'leaf', minDistance)) return false;
     const n = dir === null ? Math.round(rand(3, 5)) : Math.round(rand(1, 2));
     const p = {
       ...this.main,
@@ -181,7 +182,7 @@ export class RootFlowers {
       'Leaf Width': rand(0.08, 0.13), 'Leaf Droop': rand(0.1, 0.3), 'Leaf Randomness': 0.35,
       'Leaf Seed': Math.floor(rand(0, 999)), 'Thread Count': 0, 'Sparkle Count': 0,
     };
-    this.#add('leaf', x, y, anchor, p, rand(...this.S.LEAF_SIZE), this.S.LEAF_DUST, 'top', dir);
+    this.#add('leaf', x, y, anchor, p, rand(...this.S.LEAF_SIZE) * scale, Math.round(this.S.LEAF_DUST * scale), 'top', dir);
     return true;
   }
 
