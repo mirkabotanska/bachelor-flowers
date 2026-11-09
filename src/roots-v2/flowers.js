@@ -29,6 +29,15 @@ export const FLOWER_SETTINGS = {
   LEAF_MIN_DISTANCE: 55,
   GROW_SECONDS: 3.2,              // build-up: points -> wireframe -> flower, while it opens
   WILT_SECONDS: 2.6,              // falls apart into dust when its root is gone (slower = stays longer)
+  // [v2] how leaves go when their root is gone:
+  //   'fall'   – they let go, fall down while turning and drifting a little, and darken (like autumn)
+  //   'shrink' – they fold back into the root (the opposite of growing)
+  //   'dust'   – they fall apart into dust, like the flowers
+  LEAF_EXIT: 'dust',              // (tried 'fall' and 'shrink', back to dust)
+  LEAF_DUST_FLY: [0.25, 1.4],     // [v2] some leaves only crumble, others spread out far
+  LEAF_GO_EARLY_LATE: [-0.35, 0.3], // [v2] s: each leaf goes a bit before or after the piece of root it sits on
+  LEAF_EXIT_SECONDS: 2.2,
+  LEAF_FALL_PX: 180,              // how far they fall
   DUST_FLY: 0.7,                  // how far the loose dust flies (in flower sizes)
   DUST_RISE_PX: 30,               // how far it drifts upwards (px), like the root particles
   POINT_PX: 2.2,                  // size of the vertex points (px)
@@ -227,8 +236,16 @@ export class RootFlowers {
     const m = this.main, S = this.S;
     for (const it of this.items) {
       const age = now - it.born;
-      if (!it.wilting && !it.anchor()) { it.wilting = now; it.wiltFrom = it.progress; }
-      const w = it.wilting ? clamp01((now - it.wilting) / S.WILT_SECONDS) : 0;   // 0 -> 1: falling apart into dust
+      if (!it.wilting) {
+        const a = it.anchor();                               // true = still there; false / a time = going
+        if (a !== true) {
+          const at = typeof a === 'number' && it.kind === 'leaf' ? a + rand(...S.LEAF_GO_EARLY_LATE) : now;
+          it.wilting = Math.max(now, at); it.wiltFrom = it.progress;
+        }
+      }
+      const leafExit = it.kind === 'leaf' && S.LEAF_EXIT !== 'dust' ? S.LEAF_EXIT : null;   // [v2]
+      const exitSeconds = leafExit ? S.LEAF_EXIT_SECONDS : S.WILT_SECONDS;
+      const w = it.wilting ? clamp01((now - it.wilting) / exitSeconds) : 0;   // 0 -> 1: going away
       // build-up progress: 0 = nothing, then points, wireframe, and the solid flower (1 = fully built)
       // when it falls apart the build-up just stops where it was
       const progress = it.wilting ? it.wiltFrom : ease(age / S.GROW_SECONDS);
@@ -236,6 +253,23 @@ export class RootFlowers {
       it.vis = THREE.MathUtils.smoothstep(progress, 0.25, 0.85) * (1 - THREE.MathUtils.smoothstep(w, 0.2, 0.7));
       const grown = S.START_SCALE + (1 - S.START_SCALE) * easeOut(age / S.GROW_SECONDS);
       it.outer.scale.setScalar(it.size * grown);
+      let bright = 1, alpha = 1;
+      if (leafExit && w > 0) {                                // [v2] leaves: fall or fold back instead of dust
+        it.home ??= { x: it.outer.position.x, y: it.outer.position.y, rz: it.outer.rotation.z,
+          drift: rand(-40, 40), spin: rand(-1.6, 1.6), sway: rand(0, 6) };
+        const h = it.home;
+        if (leafExit === 'fall') {
+          const t = w * exitSeconds;
+          it.outer.position.x = h.x + h.drift * w + Math.sin(t * 3 + h.sway) * 10 * w;      // sways side to side
+          it.outer.position.y = h.y - S.LEAF_FALL_PX * w * w;                               // falls faster and faster
+          it.outer.rotation.z = h.rz + h.spin * w;
+          bright = 1 - THREE.MathUtils.smoothstep(w, 0.25, 1);                              // darkens into the black
+          alpha = 1 - THREE.MathUtils.smoothstep(w, 0.7, 1);                                // ...and the last grey shine goes
+        } else {                                                                           // 'shrink'
+          it.outer.scale.setScalar(it.size * grown * (1 - ease(w)));
+          bright = 1 - THREE.MathUtils.smoothstep(w, 0.5, 1);
+        }
+      }
 
       if (it.kind === 'flower') {                             // opens up, then breathes; closes a bit when wilting
         const open = it.p['Flower Blooming'];
@@ -260,22 +294,23 @@ export class RootFlowers {
       u.uWireDelay.value = m['Wire Delay']; u.uSolidDelay.value = m['Solid Delay']; u.uFade.value = m['Fade Length'];
       u.uPxScale.value = this.pxScale; u.uPointSize.value = this.pointSize;
       u.uPointBright.value = S.POINT_BRIGHTNESS; u.uWireBright.value = S.WIRE_BRIGHTNESS;
-      u.uCoreAlpha.value = 1; u.uCoreBright.value = 1;
+      u.uCoreAlpha.value = alpha; u.uCoreBright.value = bright;
       u.uPetalGlow.value = m['Petal Glow'];
       u.uTime.value = now;
-      u.uDissolve.value = w;
+      u.uDissolve.value = leafExit ? 0 : w;
 
       // dust only (no streaks), starting at the vertices and appearing with them
       const fu = it.fu;
       fu.uHalo.value = m['Silhouette Halo'];
       fu.uDustDist.value = m['Dust Distance']; fu.uDustSpeed.value = m['Dust Speed'];
-      fu.uDustOpacity.value = m['Dust Opacity']; fu.uDustSize.value = m['Dust Size'];
+      fu.uDustOpacity.value = m['Dust Opacity'] * bright; fu.uDustSize.value = m['Dust Size'];
       fu.uPixelRatio.value = this.renderer.getPixelRatio();
       fu.uReveal.value = progress; fu.uTime.value = now; fu.uBreath.value = 0;
       fu.uOpacity.value = 0; fu.uStrandFraction.value = 0; fu.uDustFraction.value = 1; fu.uThreadOpacity.value = 0;
-      fu.uDissolve.value = w;
-      if (w > 0) {                                           // loose dust flies off and drifts up the screen
-        fu.uDissolveDist.value = S.DUST_FLY;
+      fu.uDissolve.value = leafExit ? 0 : w;
+      if (w > 0 && !leafExit) {                                           // loose dust flies off and drifts up the screen
+        it.dustFly ??= it.kind === 'leaf' ? rand(...S.LEAF_DUST_FLY) : S.DUST_FLY;
+        fu.uDissolveDist.value = it.dustFly;
         const scale = it.outer.scale.x;
         fu.uRise.value = S.DUST_RISE_PX / scale;
         it.fibres.updateWorldMatrix(true, false);
@@ -285,7 +320,8 @@ export class RootFlowers {
     }
     // remove what has fully wilted
     this.items = this.items.filter((it) => {
-      if (!(it.wilting && now - it.wilting > S.WILT_SECONDS)) return true;
+      const exitSeconds = it.kind === 'leaf' && S.LEAF_EXIT !== 'dust' ? S.LEAF_EXIT_SECONDS : S.WILT_SECONDS;
+      if (!(it.wilting && now - it.wilting > exitSeconds)) return true;
       this.scene.remove(it.outer);
       it.outer.traverse((o) => { o.geometry?.dispose(); });
       return false;

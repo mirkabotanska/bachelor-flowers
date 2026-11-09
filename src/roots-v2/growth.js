@@ -236,9 +236,11 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   // [added v2] electric -> nature: a root starts as electricity; when the light stays on it, it turns green,
   // its line smooths out, gets a bit thicker and calmer, and leaves grow along it. Roots that are only lit
   // for a moment stay electric (and dissolve like before).
-  const NATURE_DELAY = 0.8;                      // s: this long it is pure electricity
-  const NATURE_SECONDS = 2.5;                    // s of light after that until it is fully 'nature'
+  const NATURE_DELAY = 0.3;                      // s: this long it is pure electricity (was 0.8)
+  const NATURE_SECONDS = 1.5;                    // s of light after that until it is fully 'nature' (was 2.5)
   const NATURE_FROM_PARENT = 0.5;                // new branches of a green root start this far along (0 = electric again)
+  const NATURE_AREA = 120;                       // px: new roots that start in an area that's already green...
+  const NATURE_AREA_KEEP = 1;                    // ...start this green (1 = fully green, with leaves; 0 = off)
   const NATURE_SMOOTH = 3;                       // how much the line smooths out (points on each side)
   const NATURE_WIDTH = 0.5;                      // lines get up to 50% thicker
   const NATURE_GLOW = 0.5;                       // ...and their electric glow is halved
@@ -394,11 +396,13 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
       spot = null,
     },
   ) {
+    const greenHere = natureNear({ x, y }) * NATURE_AREA_KEEP;      // [v2]
     return {
       points: [{ x, y, t: now }],                   // [changed] points remember when they grew
       born: now,                                    // [added]
       depth: parent ? parent.depth + 1 : 0,          // [added] branches are thinner
-      nature: parent ? (parent.nature ?? 0) * NATURE_FROM_PARENT : 0,   // [v2] 0 = electricity, 1 = green and smooth
+      nature: Math.max(parent ? (parent.nature ?? 0) * NATURE_FROM_PARENT : 0, greenHere),   // [v2] 0 = electricity, 1 = green
+      bornGreen: greenHere > 0.5,          // [v2] grows green right away (no electric spark)
       litTime: 0,
       spot: spot ? spot.id : parent ? parent.spot : 0, // [added] which planting spot it belongs to
       target: null,                                  // [added] connecting roots grow towards this point
@@ -533,13 +537,33 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   }
 
   // [v2] leaves along a root that has turned green: spaced out, branching off to either side
+  // [changed] planned as the root grows, so roots that are green from the start get leaves too
   function planBranchLeaves(root) {
-    root.leavesPlanned = true;
-    const n = Math.min(BRANCH_LEAF_MAX, Math.floor(root.points.length / BRANCH_LEAF_EVERY));
-    for (let k = 0; k < n; k++) {
-      const index = Math.floor(root.points.length * (0.3 + 0.6 * (k + Math.random() * 0.8) / n));
-      pendingBranchLeaves.push({ at: now + Math.random() * BRANCH_LEAF_SPREAD, root, index });
+    root.leafNext ??= Math.round(BRANCH_LEAF_EVERY * randomBetween(0.4, 0.9));
+    root.leafCount ??= 0;
+    while (root.leafCount < BRANCH_LEAF_MAX && root.points.length - 1 > root.leafNext + 2) {
+      pendingBranchLeaves.push({ at: now + Math.random() * BRANCH_LEAF_SPREAD, root, index: root.leafNext });
+      root.leafCount++;
+      root.leafNext += Math.round(BRANCH_LEAF_EVERY * randomBetween(0.7, 1.3));
     }
+  }
+
+  // [v2] how green it is around a point already (0 = nothing / electric, 1 = fully green)
+  function natureNear(pos) {
+    let best = 0;
+    for (const root of roots) {
+      if (!(root.nature > best) || root.dissolving !== undefined) continue;
+      for (let i = root.cut ?? 0; i < root.points.length; i += 2) {
+        if (getDistance(root.points[i], pos) < NATURE_AREA) { best = root.nature; break; }
+      }
+    }
+    return best;
+  }
+
+  // [v2] leaves go when the piece of root they sit on dissolves (a bit before or after, see the flowers settings);
+  // returns true while it's there, otherwise the time that piece goes
+  function leafAnchor(root, index) {
+    return () => (alive(root) && (root.cut ?? 0) <= index) || (root.points[index]?.dissolveAt ?? now);
   }
   function growBranchLeaves() {
     if (!flowers) return;
@@ -549,7 +573,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
       if (!alive(root) || index >= root.points.length - 1 || (root.cut ?? 0) > index) continue;
       const pt = root.points[index], next = root.points[index + 1];
       const dir = getAngle(pt, next) + (Math.random() < 0.5 ? -1 : 1) * randomBetween(0.5, 1.1);
-      flowers.tryLeaves(pt.x, pt.y, () => alive(root) && (root.cut ?? 0) <= index, dir, randomBetween(...BRANCH_LEAF_SCALE), 30);
+      flowers.tryLeaves(pt.x, pt.y, leafAnchor(root, index), dir, randomBetween(...BRANCH_LEAF_SCALE), 30);
     }
   }
 
@@ -568,7 +592,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
         const pt = r.points[index], next = r.points[Math.min(index + 1, r.points.length - 1)];
         const dir = Math.random() < ROSETTE_CHANCE ? null                // leaves branch off the root, to one side
           : getAngle(pt, next) + (Math.random() < 0.5 ? -1 : 1) * randomBetween(0.4, 1.0);
-        flowers.tryLeaves(pt.x, pt.y, () => alive(r) && (r.cut ?? 0) <= index, dir);
+        flowers.tryLeaves(pt.x, pt.y, leafAnchor(r, index), dir);
       }
     }
   }
@@ -667,7 +691,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
 
     while (root.distanceToGrow >= STEP_LENGTH) {
       if (target) steerToward(root, target, isLeader(root) ? LEADER_STEER : STEER);
-      const wobble = isLeader(root) ? LEADER_WOBBLE : now - root.born < SPARK_SECONDS ? SPARK_WOBBLE : WOBBLE;   // [changed]
+      const wobble = isLeader(root) ? LEADER_WOBBLE : now - root.born < SPARK_SECONDS && !root.bornGreen ? SPARK_WOBBLE : WOBBLE;   // [changed]
       root.angle += randomBetween(-wobble, wobble);
 
       if (target) {
@@ -714,7 +738,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
     if (root.isLit) {
       root.litTime += deltaSeconds;                                  // [v2] light stays -> it turns into nature
       if (root.litTime > NATURE_DELAY) root.nature = Math.min(1, root.nature + deltaSeconds / NATURE_SECONDS);
-      if (root.nature >= BRANCH_LEAF_AT && !root.leavesPlanned) planBranchLeaves(root);
+      if (root.nature >= BRANCH_LEAF_AT) planBranchLeaves(root);
       root.opacity = Math.min(1, root.opacity + deltaSeconds / BRIGHTEN_SECONDS);
       root.unlitSeconds = 0;
       root.shrinkSpeed = 0;
@@ -1070,7 +1094,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
             }));
             if (flowers && Math.random() < LEAF_ON_ROUTE_CHANCE) {          // [added] now and then a leaf on the route
               const at = leader.points.length - 1, tip = leader.points[at], lead = leader;
-              flowers.tryLeaves(tip.x, tip.y, () => alive(lead) && (lead.cut ?? 0) <= at, leader.angle + side * randomBetween(0.5, 1.1));
+              flowers.tryLeaves(tip.x, tip.y, leafAnchor(lead, at), leader.angle + side * randomBetween(0.5, 1.1));
             }
           }
           tipForkCooldown = TIP_FORK_EVERY_SLOW / Math.max(branchiness, 0.05) * randomBetween(0.7, 1.3);
@@ -1187,10 +1211,11 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
     for (const f of flashes) {
       const k = Math.exp(-(now - f.t) / FLASH_SECONDS) * 0.85 + 0.15 * Math.max(0, 1 - (now - f.t) / 6);
       const R = f.r ?? FLASH_RADIUS;
+      f.green ??= natureNear(f);                                     // [v2] in a green area the flash is green, not electric
       const g = growthContext.createRadialGradient(f.x, f.y, 0, f.x, f.y, R);
-      g.addColorStop(0, `rgba(235, 242, 255, ${0.55 * k})`);
-      g.addColorStop(0.25, `rgba(170, 200, 255, ${0.18 * k})`);
-      g.addColorStop(1, "rgba(150, 190, 255, 0)");
+      g.addColorStop(0, `rgba(${mixColor([235, 242, 255], [225, 255, 225], f.green)}, ${0.55 * k * (1 - 0.3 * f.green)})`);
+      g.addColorStop(0.25, `rgba(${mixColor([170, 200, 255], [150, 235, 170], f.green)}, ${0.18 * k})`);
+      g.addColorStop(1, `rgba(${mixColor([150, 190, 255], [150, 235, 170], f.green)}, 0)`);
       growthContext.fillStyle = g;
       growthContext.fillRect(f.x - R, f.y - R, R * 2, R * 2);
     }
@@ -1228,7 +1253,8 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
         const taper = mid > taperStart ? (lastIndex - mid) / Math.max(taperSteps, 1) : 1;
         const age = now - points[i].t;
         const pulse = Math.exp(-(now - root.charge) / CHARGE_SECONDS);           // [added] connection pulse
-        const green = smooth((age - SPARK_SECONDS * 0.5) / TO_GREEN_SECONDS) * nature * (1 - pulse);   // [v2] only when the light stayed
+        const fresh = root.bornGreen ? 1 : smooth((age - SPARK_SECONDS * 0.5) / TO_GREEN_SECONDS);   // [v2] green roots skip the spark
+        const green = fresh * nature * (1 - pulse * (1 - nature));                // [v2] green roots stay green when a pulse runs through
         const flicker = green < 0.6 ? 0.7 + 0.3 * Math.random() : 1;              // electric flicker
         const alpha = pieceFade * fade * opacity * Math.min(Math.max(taper, 0), 1) * flicker * (1.25 - 0.25 * green) * (1 + 0.6 * pulse);
         const width = baseWidth * (0.45 + 0.55 * (1 - mid / Math.max(lastIndex, 1))) * (1 + NATURE_WIDTH * nature);
