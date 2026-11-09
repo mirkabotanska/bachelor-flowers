@@ -115,6 +115,7 @@ export class RootFlowers {
     this.composer.addPass(new OutputPass());
 
     this.items = [];
+    this.layers = 0;                                       // [v2] newer flowers are drawn on top of older ones
   }
 
   count(kind) { return this.items.filter((it) => it.kind === kind && !it.wilting).length; }
@@ -128,7 +129,7 @@ export class RootFlowers {
   tryFlowerGroup(x, y, anchor, count) {
     if (!this.#free(x, y, 'flower', this.S.FLOWER_MIN_DISTANCE)) return 0;
     let made = 0;
-    for (let k = 0; k < count; k++) {
+    for (let k = count - 1; k >= 0; k--) {                  // [v2] the middle one is made last, so it's on top
       const a = (k / count) * Math.PI * 2 + rand(-0.5, 0.5), d = k === 0 && count > 2 ? 0 : rand(...this.S.GROUP_SPREAD);
       if (this.tryFlower(x + Math.cos(a) * d, y + Math.sin(a) * d, anchor, rand(...this.S.GROUP_SCALE), 26)) made++;
     }
@@ -206,10 +207,17 @@ export class RootFlowers {
     outer.add(tilt);
     outer.scale.setScalar(0.001);
     this.scene.add(outer);
+    // [v2] layers: flowers never cut through each other. Each one is drawn completely on top of the ones before it
+    // (the depth is cleared just before it), and leaves are always below the flowers.
+    lily.solidMat.transparent = true;                     // so it's sorted together with its dust and points
+    lily.solidMat.blending = THREE.NoBlending;            // ...but still drawn solid
+    const order = (kind === 'flower' ? 100000 : 0) + ++this.layers * 10;
+    const clearDepth = (renderer) => renderer.clearDepth();
     this.items.push({
       kind, x, y, anchor, p, size, dust, lily, fibres, u: own, fu, outer,
       born: this.now ?? 0, wilting: null, wiltFrom: 1, progress: 0, lastBloom: -1,
       breath: rand(...this.S.BREATH_SECONDS), phase: rand(0, Math.PI * 2),
+      order, clearDepth,
     });
   }
 
@@ -237,6 +245,10 @@ export class RootFlowers {
         }
         if (Math.abs(bloom - it.lastBloom) > 0.002) { it.lily.setBloom(clamp01(bloom)); it.lastBloom = bloom; }
       }
+      // [v2] keep the layer order (the flower's parts can be rebuilt, so set it every frame)
+      it.lily.mesh.renderOrder = it.order; it.lily.mesh.onBeforeRender = it.clearDepth;
+      for (const o of [it.lily.wire, it.lily.points, it.lily.sparkles, ...it.fibres.children]) if (o) o.renderOrder = it.order + 1;
+
       const building = progress < 0.999 && !it.wilting;     // points + wireframe only while it builds
       it.lily.points.visible = it.lily.wire.visible = building;
       if (it.lily.sparkles) it.lily.sparkles.visible = false;

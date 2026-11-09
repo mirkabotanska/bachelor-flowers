@@ -79,3 +79,8 @@
 #roots-page-v2 .view--wide { position: relative; }
 #roots-page-v2 .view__canvas--growth { position: relative; z-index: 1; background: transparent; mix-blend-mode: screen; }
 #roots-page-v2 .view__canvas--flowers { z-index: 0; display: block; }
+
+/* [added v2] fake lights button */
+#roots-page-v2 .fake { display: flex; align-items: center; gap: 12px; margin: 0 0 16px; }
+#roots-page-v2 .fake__button, #roots-page-v2 .fake__stop { padding: 8px 16px; font: inherit; cursor: pointer; }
+#roots-page-v2 .fake__info { color: #aaa; font-size: 14px; }

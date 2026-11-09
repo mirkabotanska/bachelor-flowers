@@ -7,6 +7,11 @@ import './roots.css';
 import { RootFlowers } from './flowers.js';                     // [added] flowers + leaves on the roots
 
 const MARKUP = `<h1 class="lab__title">Roots v2 – working copy (page 4 stays as it was)</h1>
+    <div class="fake">
+      <button class="fake__button" type="button">Fake lights (random scenario)</button>
+      <button class="fake__stop" type="button">Stop</button>
+      <span class="fake__info"></span>
+    </div>
     <video class="lab__video" muted playsinline hidden></video>
 
     <section class="lab__views">
@@ -232,6 +237,21 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   let prevLight = null, lightSpeed = 0, moveAngle = 0;
   let branchiness = 0.5;                         // [added] 1 = slow light (branch a lot), 0 = fast
   let tipForkCooldown = 0;
+
+  // [added v2] several lights at once: every light keeps its own copy of the values above
+  // (where it rests, its cooldowns, its moving route...). Before a light is handled its values are loaded,
+  // afterwards they are saved again. The mouse/camera light is 'main', the fake lights get their own ids.
+  const lightStates = new Map();                 // id -> that light's values
+  const newLightState = () => ({ rest: null, branchCooldown: 0, sproutCooldown: 0, regrowCooldown: 0, leader: null,
+    prevLight: null, lightSpeed: 0, moveAngle: 0, branchiness: 0.5, tipForkCooldown: 0 });
+  function loadLight(st) {
+    ({ rest, branchCooldown, sproutCooldown, regrowCooldown, leader, prevLight, lightSpeed, moveAngle, branchiness, tipForkCooldown } = st);
+  }
+  function saveLight(st) {
+    Object.assign(st, { rest, branchCooldown, sproutCooldown, regrowCooldown, leader, prevLight, lightSpeed, moveAngle, branchiness, tipForkCooldown });
+  }
+  const isLeader = (root) => root === leader || [...lightStates.values()].some((st) => st.leader === root);
+  const glows = new Map();                       // [added v2] one glow per light
 
   function getBrightness(pixels, pixelIndex) {
     const offset = pixelIndex * 4;
@@ -607,8 +627,8 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
     root.distanceToGrow += distance;
 
     while (root.distanceToGrow >= STEP_LENGTH) {
-      if (target) steerToward(root, target, root === leader ? LEADER_STEER : STEER);
-      const wobble = root === leader ? LEADER_WOBBLE : now - root.born < SPARK_SECONDS ? SPARK_WOBBLE : WOBBLE;   // [changed]
+      if (target) steerToward(root, target, isLeader(root) ? LEADER_STEER : STEER);
+      const wobble = isLeader(root) ? LEADER_WOBBLE : now - root.born < SPARK_SECONDS ? SPARK_WOBBLE : WOBBLE;   // [changed]
       root.angle += randomBetween(-wobble, wobble);
 
       if (target) {
@@ -630,22 +650,23 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
       root.stepsUntilSplit--;
       if (root.stepsUntilSplit <= 0) {
         splitBranch(root);
-        root.stepsUntilSplit = root === leader                       // [changed] twigs along the route depend on speed
+        const br = root.branchiness ?? branchiness;                     // [v2] each route keeps its own
+        root.stepsUntilSplit = isLeader(root)                          // [changed] twigs along the route depend on speed
           ? Math.round(randomBetween(
-              TWIG_GAP_FAST[0] + (TWIG_GAP_SLOW[0] - TWIG_GAP_FAST[0]) * branchiness,
-              TWIG_GAP_FAST[1] + (TWIG_GAP_SLOW[1] - TWIG_GAP_FAST[1]) * branchiness))
+              TWIG_GAP_FAST[0] + (TWIG_GAP_SLOW[0] - TWIG_GAP_FAST[0]) * br,
+              TWIG_GAP_FAST[1] + (TWIG_GAP_SLOW[1] - TWIG_GAP_FAST[1]) * br))
           : randomStepsUntilSplit();
       }
     }
   }
 
-  function getOwnGrowSpeed(root, light) {
+  function getOwnGrowSpeed(root, lights) {                           // [v2] any light can feed a root
     if (root.burstSteps === 0) return 0;
     const speed = now - root.born < SPARK_SECONDS ? GROW_SPEED * SPARK_SPEED : GROW_SPEED;   // [added] fast spark
 
     if (root.kind === "side" || root.kind === "connector") return speed;   // [changed] connectors keep growing
 
-    return light && getDistance(root.points[0], light) < LIGHT_REACH ? speed : 0;
+    return lights.some((light) => getDistance(root.points[0], light) < LIGHT_REACH) ? speed : 0;
   }
 
   function updateRootLight(root, isFollowing, deltaSeconds) {
@@ -739,7 +760,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   // [added] instead of shrinking back: dissolve. The oldest parts go first, each root starts at a slightly
   // different moment, and every point gets some random timing, so it never all happens at once.
   function dissolveRoot(root) {
-    if (root === leader) return;                                  // the route that follows the light stays (its tail trims itself)
+    if (isLeader(root)) return;                                   // the route that follows a light stays (its tail trims itself)
     const orphaned = root.parent && (root.parent.dissolving !== undefined || !roots.includes(root.parent)   // [added] parent is going/gone
       || (root.parent.cut ?? 0) > root.attachIndex);                                                      // or its branch point is
     if (root.dissolving !== undefined || (!canShrink(root) && !orphaned)) return;
@@ -896,34 +917,51 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
     return chosen;
   }
 
-  function updateRoots(light, deltaSeconds) {
-    // [added] how fast and where the light moves
-    if (light && prevLight) {
-      const v = getDistance(light, prevLight) / Math.max(deltaSeconds, 1e-3);
-      lightSpeed += (v - lightSpeed) * Math.min(1, deltaSeconds * 10);
-      if (getDistance(light, prevLight) > 0.5) moveAngle = getAngle(prevLight, light);
-    } else lightSpeed = 0;
+  // [changed v2] several lights at once. Each light: speed, resting, which roots it feeds (before), then
+  // planting / boosting / following (after). All roots are grown, dimmed and dissolved once in between.
+  function updateRoots(lights, deltaSeconds) {
     growLeaves();                                                      // [added]
-    const newPress = Boolean(light) && !prevLight;                      // [added] light just switched on / mouse pressed
-    prevLight = light ? { x: light.x, y: light.y } : null;
-    const moving = Boolean(light) && lightSpeed > MOVE_SPEED;
-    if (!light) leader = null;
+    for (const id of [...lightStates.keys()]) if (!lights.some((l) => l.id === id)) lightStates.delete(id);   // that light went off
+    const per = [];
+    const nearest = new Map();                                         // root -> distance to the closest light
+    const followed = new Set();
+    for (const light of lights) {
+      if (!lightStates.has(light.id)) lightStates.set(light.id, newLightState());
+      const st = lightStates.get(light.id);
+      loadLight(st);
+      // [added] how fast and where the light moves
+      if (light && prevLight) {
+        const v = getDistance(light, prevLight) / Math.max(deltaSeconds, 1e-3);
+        lightSpeed += (v - lightSpeed) * Math.min(1, deltaSeconds * 10);
+        if (getDistance(light, prevLight) > 0.5) moveAngle = getAngle(prevLight, light);
+      } else lightSpeed = 0;
+      const newPress = Boolean(light) && !prevLight;                      // [added] light just switched on / mouse pressed
+      prevLight = light ? { x: light.x, y: light.y } : null;
+      const moving = Boolean(light) && lightSpeed > MOVE_SPEED;
+      if (!light) leader = null;
 
-    const isResting = updateRest(light, deltaSeconds) && !moving;   // [changed] only really standing still
-    branchCooldown = Math.max(0, branchCooldown - deltaSeconds);
-    sproutCooldown = Math.max(0, sproutCooldown - deltaSeconds);
+      const isResting = updateRest(light, deltaSeconds) && !moving;   // [changed] only really standing still
+      branchCooldown = Math.max(0, branchCooldown - deltaSeconds);
+      sproutCooldown = Math.max(0, sproutCooldown - deltaSeconds);
 
-    const closest = measureLight(light);
-    const isWithinSpacing = closest && closest.distance <= PLANT_SPACING;
-    // [changed] the roots that grow towards the light are the closest ones from ANOTHER spot
-    const activeSpot = spotNear(light);
-    const other = light ? closestOtherPoint(light, activeSpot?.id) : null;
-    const followedRoot = moving && leader ? leader : other && other.distance <= PLANT_SPACING ? other.root : isWithinSpacing ? closest.root : null;
+      const closest = measureLight(light);
+      const isWithinSpacing = closest && closest.distance <= PLANT_SPACING;
+      // [changed] the roots that grow towards the light are the closest ones from ANOTHER spot
+      const activeSpot = spotNear(light);
+      const other = light ? closestOtherPoint(light, activeSpot?.id) : null;
+      const followedRoot = moving && leader ? leader : other && other.distance <= PLANT_SPACING ? other.root : isWithinSpacing ? closest.root : null;
+      for (const root of roots) nearest.set(root, Math.min(nearest.get(root) ?? Infinity, root.lightDistance));
+      if (followedRoot) followed.add(followedRoot);
+      per.push({ light, st, newPress, moving, isResting, closest, other, isWithinSpacing });
+      saveLight(st);
+    }
+    for (const root of roots) root.lightDistance = nearest.get(root) ?? Infinity;
+    if (!lights.length) leader = null;
 
     updateRootTree();
 
     for (const root of roots) {
-      updateRootLight(root, root === followedRoot, deltaSeconds);
+      updateRootLight(root, followed.has(root), deltaSeconds);
       dissolveRoot(root);                          // [changed] was shrinkRoot: dissolve instead of growing back
       updateTaper(root, deltaSeconds);
 
@@ -932,7 +970,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
         if (!roots.includes(root.targetRoot) || root.targetRoot.points.length < 2) { root.targetRoot = null; root.target = null; }
         else { const tp = root.targetRoot.points[Math.min(root.targetIndex, root.targetRoot.points.length - 1)]; root.target = { x: tp.x, y: tp.y }; }
       }
-      const speed = getOwnGrowSpeed(root, light);
+      const speed = getOwnGrowSpeed(root, lights);
       if (speed > 0) growRoot(root, speed * deltaSeconds, root.target);   // [changed] connectors steer to their target
       if (root.target && getDistance(root.points.at(-1), root.target) < STEP_LENGTH * 1.8) {
         root.points.push({ x: root.target.x, y: root.target.y, t: now });   // [added] snap on: the lines really join
@@ -957,6 +995,14 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
     spots = spots.filter((spot) => roots.some((root) => root.spot === spot.id));   // [added]
     for (const id of flowerSpots) if (!spots.some((spot) => spot.id === id)) flowerSpots.delete(id);   // [added]
 
+    for (const p of per) {
+      loadLight(p.st);
+      afterLight(p, deltaSeconds);
+      saveLight(p.st);
+    }
+  }
+
+  function afterLight({ light, newPress, moving, isResting, closest, other, isWithinSpacing }, deltaSeconds) {
     // [added] moving: the main route grows along with the light (and nothing else gets in the way)
     if (moving) {
       if (!leader || !roots.includes(leader) || getDistance(leader.points.at(-1), light) > LEAD_LOST) leader = pickLeader(light);
@@ -987,6 +1033,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
           tipForkCooldown = TIP_FORK_EVERY_SLOW / Math.max(branchiness, 0.05) * randomBetween(0.7, 1.3);
         }
         leader.opacity = 1;
+        leader.branchiness = branchiness;                                        // [v2]
         trimTrail(leader, light);                                                // [added]
       }
       return;
@@ -1026,17 +1073,24 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
     followLight(other && other.distance <= PLANT_SPACING ? other : closest, light, deltaSeconds);   // [changed]
   }
 
-  function updateGlow(light, deltaSeconds) {
-    if (light) {
-      glow.x = light.x;
-      glow.y = light.y;
-      glow.opacity = Math.min(1, glow.opacity + deltaSeconds / GLOW_IN_SECONDS);
-    } else {
-      glow.opacity = Math.max(0, glow.opacity - deltaSeconds / GLOW_OUT_SECONDS);
+  function updateGlow(lights, deltaSeconds) {                         // [changed v2] one glow per light
+    for (const light of lights) {
+      const g = glows.get(light.id) ?? { x: light.x, y: light.y, opacity: 0 };
+      g.x = light.x; g.y = light.y; g.on = true;
+      glows.set(light.id, g);
+    }
+    for (const [id, g] of glows) {
+      if (g.on) g.opacity = Math.min(1, g.opacity + deltaSeconds / GLOW_IN_SECONDS);
+      else { g.opacity = Math.max(0, g.opacity - deltaSeconds / GLOW_OUT_SECONDS); if (g.opacity === 0) glows.delete(id); }
+      g.on = false;
     }
   }
 
   function drawGlow() {
+    for (const glow of glows.values()) drawOneGlow(glow);
+  }
+
+  function drawOneGlow(glow) {
     const gradient = growthContext.createRadialGradient(glow.x, glow.y, 0, glow.x, glow.y, GLOW_RADIUS);
     gradient.addColorStop(0, `rgba(185, 245, 200, ${GLOW_STRENGTH})`);
     gradient.addColorStop(1, "rgba(185, 245, 200, 0)");
@@ -1134,8 +1188,12 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
       // light's found on the small canvas, roots live on the big one
       scaledLight = light && { x: light.x * GROWTH_SCALE, y: light.y * GROWTH_SCALE };
     }
-    updateRoots(scaledLight, deltaSeconds);
-    updateGlow(scaledLight, deltaSeconds);
+    // [v2] the mouse / camera light plus the fake lights
+    const lights = [];
+    if (scaledLight) lights.push({ id: 'main', x: scaledLight.x, y: scaledLight.y });
+    lights.push(...updateFakeLights(Math.min(deltaSeconds, 0.1)));
+    updateRoots(lights, deltaSeconds);
+    updateGlow(lights, deltaSeconds);
 
     growthContext.clearRect(0, 0, growthCanvas.width, growthCanvas.height);
     drawGlow();
@@ -1158,6 +1216,68 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
 
     rafId = requestAnimationFrame(render);                      // [changed] keep the id so the page can stop it
   }
+
+  // ---- [added v2] fake lights: a button that plays a random scenario with several lights at once.
+  // Each light starts at a random moment, stays for a random time and either stands still, wanders around,
+  // or is switched on and off a few times on the same spot (like pressing again -> the spot gets stronger).
+  const FAKE = {
+    COUNT: [2, 7],               // how many lights
+    START_WITHIN: 4,             // s: they don't all start at once
+    STAY: [2.5, 10],             // s: how long each light stays
+    MOVE_CHANCE: 0.4,            // share of lights that wander around
+    TAP_CHANCE: 0.2,             // share that are switched on/off a few times on one spot
+    SPEED: [60, 450],            // px/s for the wandering ones (slow = many branches, fast = long clean route)
+    MARGIN: 80,                  // px from the edges
+  };
+  let fakeLights = [];
+  let fakeCount = 0;
+  const fakeInfo = page.querySelector('.fake__info');
+
+  function startFakeScenario() {
+    const W = growthCanvas.width, H = growthCanvas.height, M = FAKE.MARGIN;
+    const n = Math.round(randomBetween(FAKE.COUNT[0], FAKE.COUNT[1]));
+    fakeLights = [];
+    const kinds = { still: 0, moving: 0, tapping: 0 };
+    for (let i = 0; i < n; i++) {
+      const r = Math.random();
+      const kind = r < FAKE.MOVE_CHANCE ? 'moving' : r < FAKE.MOVE_CHANCE + FAKE.TAP_CHANCE ? 'tapping' : 'still';
+      kinds[kind]++;
+      const start = now + Math.random() * FAKE.START_WITHIN;
+      fakeLights.push({
+        id: `fake${fakeCount++}`, kind, start, end: start + randomBetween(FAKE.STAY[0], FAKE.STAY[1]),
+        x: randomBetween(M, W - M), y: randomBetween(M, H - M),
+        angle: Math.random() * Math.PI * 2, speed: randomBetween(FAKE.SPEED[0], FAKE.SPEED[1]),
+        turn: randomBetween(0.6, 2.2), phase: Math.random() * 10,
+        tapOn: randomBetween(0.4, 0.9), tapOff: randomBetween(0.25, 0.6),
+      });
+    }
+    fakeInfo.textContent = `${n} lights: ${kinds.still} still, ${kinds.moving} moving, ${kinds.tapping} tapping`;
+  }
+
+  // positions of the fake lights that are on right now (same format as the mouse light)
+  function updateFakeLights(dt) {
+    const W = growthCanvas.width, H = growthCanvas.height, M = FAKE.MARGIN;
+    const on = [];
+    for (const f of fakeLights) {
+      if (now < f.start || now > f.end) continue;
+      if (f.kind === 'moving') {                                       // wanders in smooth curves, turns at the edges
+        f.angle += Math.sin(now * f.turn + f.phase) * f.turn * dt;
+        f.x += Math.cos(f.angle) * f.speed * dt; f.y += Math.sin(f.angle) * f.speed * dt;
+        if (f.x < M || f.x > W - M) { f.angle = Math.PI - f.angle; f.x = Math.min(Math.max(f.x, M), W - M); }
+        if (f.y < M || f.y > H - M) { f.angle = -f.angle; f.y = Math.min(Math.max(f.y, M), H - M); }
+      }
+      if (f.kind === 'tapping') {                                      // on for a moment, off for a moment, again...
+        const cycle = f.tapOn + f.tapOff;
+        if ((now - f.start) % cycle > f.tapOn) continue;
+      }
+      on.push({ id: f.id, x: f.x, y: f.y });
+    }
+    if (fakeLights.length && fakeLights.every((f) => now > f.end)) { fakeLights = []; fakeInfo.textContent += ' (done)'; }
+    return on;
+  }
+
+  page.querySelector('.fake__button').addEventListener('click', startFakeScenario);
+  page.querySelector('.fake__stop').addEventListener('click', () => { fakeLights = []; fakeInfo.textContent = ''; });
 
   async function startCamera() {
     try {
