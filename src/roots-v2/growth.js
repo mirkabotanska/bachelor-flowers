@@ -221,7 +221,8 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   let particles = [];                            // [added] dissolving roots
   let flowers = null;                            // [added] 3D layer with flowers + leaves (made when the page opens)
   let pendingLeaves = [];
-  let pendingBranchLeaves = [];                  // [v2] leaves along roots that turned green                        // [added] leaves appear a moment after roots are planted
+  let pendingBranchLeaves = [];                  // [v2] leaves along roots that turned green
+  let veins = [];                                // [v2] thin lines between green roots                        // [added] leaves appear a moment after roots are planted
   const FLOWER_ON_CONNECT = 0.85;                // chance that flowers bloom where two roots connect
   const FLOWERS_ON_CONNECT = [2, 4];             // ...a small group of this many smaller flowers
   const FLOWERS_AT_BOOST = [1, 2];
@@ -241,14 +242,41 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   const NATURE_FROM_PARENT = 0.5;                // new branches of a green root start this far along (0 = electric again)
   const NATURE_AREA = 120;                       // px: new roots that start in an area that's already green...
   const NATURE_AREA_KEEP = 1;                    // ...start this green (1 = fully green, with leaves; 0 = off)
-  const NATURE_SMOOTH = 3;                       // how much the line smooths out (points on each side)
+  const NATURE_SMOOTH = 5;                       // how much the line smooths out (points on each side)
   const NATURE_WIDTH = 0.5;                      // lines get up to 50% thicker
   const NATURE_GLOW = 0.5;                       // ...and their electric glow is halved
-  const BRANCH_LEAF_AT = 0.6;                    // nature level when leaves start growing on a root
-  const BRANCH_LEAF_EVERY = 22;                  // points between leaves along a root (a point is 6 px)
-  const BRANCH_LEAF_MAX = 3;                     // leaves per root at most
-  const BRANCH_LEAF_SCALE = [0.5, 0.8];          // they're smaller than the leaves at a spot
-  const BRANCH_LEAF_SPREAD = 1.6;                // s: they don't all appear at once
+  const BRANCH_LEAF_AT = 0.35;                   // nature level when leaves start growing on a root (as the new look starts)
+  const BRANCH_LEAF_EVERY = 9;                   // points between leaves along a root (a point is 6 px)
+  const BRANCH_LEAF_MAX = 8;                     // leaves per root at most
+  const BRANCH_LEAF_SCALE = [0.6, 0.95];         // they're smaller than the leaves at a spot
+  const BRANCH_LEAF_SPREAD = 1.0;                // s: they don't all appear at once
+  const ROUTE_LEAF_EVERY = 12;                   // [v2] a moving light's route gets a leaf every this many points...
+  const ROUTE_LEAF_CHANCE = 0.6;                 // ...with this chance (also when it's still electric)
+  const ROUTE_LEAF_SCALE = [0.55, 0.85];
+
+  // [added v2] the 'nature' look (from Mirka's sketch): instead of thin electric strokes, green roots are drawn
+  // as smooth shapes that swell and taper, in two tones, with a web of thin veins between them (like a leaf close up)
+  const NATURE_LOOK_FROM = 0.3;                  // nature level where the new look starts to show...
+  const NATURE_LOOK_TO = 0.9;                    // ...and where it has fully replaced the electric line
+  const NATURE_THICKNESS = 5.5;                  // px: the thickest roots; branches get thinner (x0.72 per level)
+  const NATURE_MIN_THICKNESS = 1.4;
+  const NATURE_TIP_TAPER = 0.75;                 // 0.75 = after NATURE_TAPER_LENGTH a root is a quarter of its base width
+  const NATURE_TAPER_LENGTH = 140;               // points (a point is 6 px), counted along parent + branch together
+  const NATURE_KEEP_TONE = 0.75;                 // chance a branch has the same colour as the root it grows from
+  const NATURE_SWELL = 0.22;                     // roots get slightly thicker and thinner along their length
+  const NATURE_JOINT_BLEND = 8;                  // points over which a branch goes from its parent's width to its own
+  const NATURE_WHITE_SHARE = [0.5, 0.3];         // chance of a white root: [main roots, branches]; the rest are green
+  const NATURE_WHITE = [240, 248, 240];
+  const NATURE_GREEN = [110, 232, 145];
+  const NATURE_HALO = [[10, 0.05], [4, 0.12]];   // soft glow around them: [extra width px, opacity], wide first
+  const VEIN_AT = 0.7;                           // nature level when veins start growing between roots
+  const VEIN_EVERY = [5, 9];                     // points between veins along a root (a point is 6 px)
+  const VEIN_LENGTH = [16, 80];                  // px: veins connect to roots this close...
+  const VEIN_FREE_CHANCE = 0.45;                 // ...otherwise sometimes a short loose vein that just curls off
+  const VEIN_WIDTH = 0.8;
+  const VEIN_ALPHA = 0.55;
+  const VEIN_GROW_SECONDS = 0.7;
+  const VEIN_MAX = 700;
   const LEAF_ON_ROUTE_CHANCE = 0.12;             // chance of a leaf at a fork when drawing a route slowly
   const alive = (r) => roots.includes(r) && r.dissolving === undefined;
   let leader = null;                             // [added] the root that follows a moving light
@@ -548,6 +576,47 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
     }
   }
 
+  // [v2] thin veins: from a point on a green root to the nearest point on another green root close by
+  // (or a short loose curl). They grow in, and go when one of their roots starts to dissolve.
+  function planVeins(root) {
+    root.veinNext ??= Math.round(randomBetween(2, VEIN_EVERY[1]));
+    while (root.veinNext < root.points.length - 3 && veins.length < VEIN_MAX) {
+      const ai = root.veinNext;
+      root.veinNext += Math.round(randomBetween(...VEIN_EVERY));
+      const a = root.points[ai];
+      let best = null, bestD = VEIN_LENGTH[1];
+      for (const other of roots) {
+        if (other === root || !(other.nature > 0.5) || other.dissolving !== undefined) continue;
+        if (other.parent === root && Math.abs(other.attachIndex - ai) < 6) continue;   // not to its own branch right there
+        if (root.parent === other && Math.abs(root.attachIndex - ai) < 6) continue;
+        for (let j = other.cut ?? 0; j < other.points.length; j += 2) {
+          const d = getDistance(a, other.points[j]);
+          if (d < bestD && d > VEIN_LENGTH[0]) { bestD = d; best = { b: other, bi: j }; }
+        }
+      }
+      const bend = [randomBetween(-0.45, 0.45), randomBetween(-0.45, 0.45)];
+      if (best) veins.push({ a: root, ai, b: best.b, bi: best.bi, bend, born: now });
+      else if (Math.random() < VEIN_FREE_CHANCE) {
+        const next = root.points[Math.min(ai + 1, root.points.length - 1)];
+        const ang = getAngle(a, next) + (Math.random() < 0.5 ? -1 : 1) * randomBetween(0.6, 1.3);
+        const len = randomBetween(14, 34);
+        veins.push({ a: root, ai, b: null, end: { dx: Math.cos(ang) * len, dy: Math.sin(ang) * len }, bend, born: now });
+      }
+    }
+  }
+
+  // [v2] leaves along the route of a moving light, a little behind its tip
+  function planRouteLeaves(root) {
+    root.routeLeafNext ??= Math.round(ROUTE_LEAF_EVERY * randomBetween(0.3, 1));
+    while (root.points.length - 1 > root.routeLeafNext + 3) {
+      if (Math.random() < ROUTE_LEAF_CHANCE) {
+        pendingBranchLeaves.push({ at: now + randomBetween(0.15, 0.6), root, index: root.routeLeafNext });
+        root.routeLeaf = true;
+      }
+      root.routeLeafNext += Math.round(ROUTE_LEAF_EVERY * randomBetween(0.6, 1.4));
+    }
+  }
+
   // [v2] how green it is around a point already (0 = nothing / electric, 1 = fully green)
   function natureNear(pos) {
     let best = 0;
@@ -573,7 +642,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
       if (!alive(root) || index >= root.points.length - 1 || (root.cut ?? 0) > index) continue;
       const pt = root.points[index], next = root.points[index + 1];
       const dir = getAngle(pt, next) + (Math.random() < 0.5 ? -1 : 1) * randomBetween(0.5, 1.1);
-      flowers.tryLeaves(pt.x, pt.y, leafAnchor(root, index), dir, randomBetween(...BRANCH_LEAF_SCALE), 30);
+      flowers.tryLeaves(pt.x, pt.y, leafAnchor(root, index), dir, randomBetween(...(root.routeLeaf ? ROUTE_LEAF_SCALE : BRANCH_LEAF_SCALE)), 20);
     }
   }
 
@@ -988,6 +1057,11 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   function updateRoots(lights, deltaSeconds) {
     growLeaves();                                                      // [added]
     growBranchLeaves();                                                // [v2]
+    // [v2] veins: drop the ones whose roots are going (they fade out quickly), plan new ones
+    for (const v of veins) if (!v.dying && (!alive(v.a) || (v.b && !alive(v.b)))) v.dying = now;
+    veins = veins.filter((v) => !(v.dying && now - v.dying > 0.4));
+    for (const root of roots) if (root.nature > VEIN_AT && root.dissolving === undefined) planVeins(root);
+    for (const st of lightStates.values()) if (st.leader && alive(st.leader)) planRouteLeaves(st.leader);
     for (const id of [...lightStates.keys()]) if (!lights.some((l) => l.id === id)) lightStates.delete(id);   // that light went off
     const per = [];
     const nearest = new Map();                                         // root -> distance to the closest light
@@ -1229,11 +1303,13 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
     drawFlashes();
 
     const smoothed = new Map();                                             // [v2]
+    for (const root of roots) smoothLine(root, smoothed);                   // [v2] every root's drawn line first
     for (const root of roots) {
       const { opacity, taperSteps, depth } = root;
       const points = root.points;
-      const line = smoothLine(root, smoothed);                              // [v2] where the line is drawn
+      const line = smoothed.get(root);                                      // [v2] where the line is drawn
       const nature = root.nature ?? 0;
+      const look = smooth((nature - NATURE_LOOK_FROM) / (NATURE_LOOK_TO - NATURE_LOOK_FROM));   // [v2] 0 = electric line, 1 = nature shape
       const lastIndex = points.length - 1;
       const from = Math.min(root.visibleFrom ?? 0, root.cut ?? 0);   // [added] start of a route may be (fading) gone
       const dissolving = root.dissolving !== undefined;
@@ -1258,12 +1334,126 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
         const flicker = green < 0.6 ? 0.7 + 0.3 * Math.random() : 1;              // electric flicker
         const alpha = pieceFade * fade * opacity * Math.min(Math.max(taper, 0), 1) * flicker * (1.25 - 0.25 * green) * (1 + 0.6 * pulse);
         const width = baseWidth * (0.45 + 0.55 * (1 - mid / Math.max(lastIndex, 1))) * (1 + NATURE_WIDTH * nature);
-        strokePiece(line, i, j, Math.max(width, 0.5), mixColor(ELECTRIC_COLOR, GREEN_COLOR, green), Math.min(alpha, 1),
+        if (look < 1) strokePiece(line, i, j, Math.max(width, 0.5), mixColor(ELECTRIC_COLOR, GREEN_COLOR, green), Math.min(alpha * (1 - look), 1),
           GLOW_ALPHA * (1 - NATURE_GLOW * nature));
+        // [v2] the nature shape is drawn below in one piece; only the pieces that are dissolving are drawn here
+        if (look > 0 && goneAt <= now) strokePiece(line, i, j, natureWidth(root, mid), natureColor(root), pieceFade * fade * opacity * look, 0.1);
       }
     }
+    // [v2] nature look on top: veins, then the green roots, then the white ones
+    growthContext.globalCompositeOperation = "source-over";
+    drawVeins(smoothed);
+    const natureRoots = roots.filter((r) => (r.nature ?? 0) > NATURE_LOOK_FROM);
+    for (const white of [false, true]) {
+      for (const root of natureRoots) if (isWhite(root) === white) drawNatureRoot(root, smoothed.get(root));
+    }
+    growthContext.globalCompositeOperation = "lighter";
     drawParticles();                                                        // [added]
     growthContext.globalCompositeOperation = "source-over";
+  }
+
+  // ---- [v2] nature look helpers
+  const isWhite = (root) => (root.white ??= root.parent
+    ? (Math.random() < NATURE_KEEP_TONE ? isWhite(root.parent) : !isWhite(root.parent))   // mostly the same as its parent
+    : Math.random() < NATURE_WHITE_SHARE[0]);
+  const natureColor = (root) => (isWhite(root) ? NATURE_WHITE : NATURE_GREEN);
+
+  // width of a green root at point i. It continues from the root it grows out of (no jumps where a branch
+  // starts): thinner the further from where the whole thing started, gently swelling, pointed at the end.
+  const offsetOf = (root) => (root.offset ??= root.parent ? offsetOf(root.parent) + (root.attachIndex ?? 0) : 0);
+  const treeSeed = (root) => (root.parent ? treeSeed(root.parent) : (root.seed ??= Math.random() * 100));
+  function bodyWidth(root, i) {
+    const total = offsetOf(root) + i;
+    const own = Math.max(NATURE_THICKNESS * Math.pow(0.72, root.depth), NATURE_MIN_THICKNESS)
+      * (1 - NATURE_TIP_TAPER * Math.min(total / NATURE_TAPER_LENGTH, 1))
+      * (1 + NATURE_SWELL * Math.sin(total * 0.09 + treeSeed(root)));
+    if (!root.parent || i >= NATURE_JOINT_BLEND || !roots.includes(root.parent)) return own;
+    const from = bodyWidth(root.parent, Math.min(root.attachIndex ?? 0, root.parent.points.length - 1));
+    return from + (own - from) * smooth(i / NATURE_JOINT_BLEND);              // grows out of its parent smoothly
+  }
+  function natureWidth(root, i) {
+    const last = Math.max(root.points.length - 1, 1);
+    const tip = Math.min(1, Math.pow(Math.max(last - i, 0) / 7, 0.6));        // rounds off into a point
+    return Math.max(bodyWidth(root, i) * tip, 0.3);
+  }
+
+  // one smooth shape per root (no pieces, so no visible steps), with a soft glow around it
+  function drawNatureRoot(root, line) {
+    const look = smooth(((root.nature ?? 0) - NATURE_LOOK_FROM) / (NATURE_LOOK_TO - NATURE_LOOK_FROM));
+    const fade = root.dissolving !== undefined && !particleToggle.checked ? 1 - Math.min((now - root.dissolving) / (DISSOLVE_SECONDS * 1.5), 1) : 1;
+    const alpha = look * fade * root.opacity;
+    if (alpha < 0.01) return;
+    const from = Math.min(root.visibleFrom ?? 0, root.cut ?? 0);
+    const last = line.length - 1;
+    // runs of points that are still there (dissolving pieces are drawn as strokes in drawRoots)
+    let run = [];
+    const runs = [];
+    for (let i = from; i <= last; i++) {
+      if ((root.points[i].dissolveAt ?? Infinity) > now) run.push(i);
+      else { if (run.length > 1) runs.push(run); run = []; }
+    }
+    if (run.length > 1) runs.push(run);
+    const color = natureColor(root);
+    for (const r of runs) {
+      // every 2nd point (smoother), always keep the first and last
+      const idx = r.filter((i, k) => k % 2 === 0 || k === r.length - 1);
+      const left = [], right = [];
+      for (let k = 0; k < idx.length; k++) {
+        const i = idx[k];
+        const p = line[i], a = line[idx[Math.max(k - 1, 0)]], b = line[idx[Math.min(k + 1, idx.length - 1)]];
+        let tx = b.x - a.x, ty = b.y - a.y;
+        const len = Math.hypot(tx, ty) || 1; tx /= len; ty /= len;
+        const w = natureWidth(root, i) / 2;
+        left.push({ x: p.x - ty * w, y: p.y + tx * w });
+        right.push({ x: p.x + ty * w, y: p.y - tx * w });
+      }
+      const outline = [...left, ...right.reverse()];
+      growthContext.beginPath();
+      growthContext.moveTo(outline[0].x, outline[0].y);
+      for (let k = 1; k < outline.length - 1; k++) {                       // curves through the midpoints = smooth
+        const m = { x: (outline[k].x + outline[k + 1].x) / 2, y: (outline[k].y + outline[k + 1].y) / 2 };
+        growthContext.quadraticCurveTo(outline[k].x, outline[k].y, m.x, m.y);
+      }
+      growthContext.lineTo(outline[outline.length - 1].x, outline[outline.length - 1].y);
+      growthContext.closePath();
+      for (const [extra, a] of NATURE_HALO) {
+        growthContext.strokeStyle = `rgba(${color}, ${a * alpha})`;
+        growthContext.lineWidth = extra;
+        growthContext.stroke();
+      }
+      growthContext.fillStyle = `rgba(${color}, ${alpha})`;
+      growthContext.fill();
+    }
+  }
+
+  // thin wavy veins between the green roots; they grow in from one end
+  function drawVeins(lines) {
+    growthContext.lineWidth = VEIN_WIDTH;
+    for (const v of veins) {
+      const la = lines.get(v.a), lb = v.b && lines.get(v.b);
+      if (!la || (v.b && !lb)) continue;
+      const A = la[Math.min(v.ai, la.length - 1)];
+      const B = v.b ? lb[Math.min(v.bi, lb.length - 1)] : { x: A.x + v.end.dx, y: A.y + v.end.dy };
+      const look = (r) => smooth(((r.nature ?? 0) - NATURE_LOOK_FROM) / (NATURE_LOOK_TO - NATURE_LOOK_FROM)) * r.opacity;
+      const dying = v.dying ? 1 - (now - v.dying) / 0.4 : 1;
+      const alpha = VEIN_ALPHA * Math.min(look(v.a), v.b ? look(v.b) : 1) * Math.max(dying, 0);
+      if (alpha < 0.01) continue;
+      const t = smooth((now - v.born) / VEIN_GROW_SECONDS);
+      const dx = B.x - A.x, dy = B.y - A.y, d = Math.hypot(dx, dy) || 1;
+      const nx = -dy / d, ny = dx / d;
+      // S-shaped curve: two control points pushed to different sides
+      const P = [A, { x: A.x + dx / 3 + nx * v.bend[0] * d, y: A.y + dy / 3 + ny * v.bend[0] * d },
+        { x: A.x + dx * 2 / 3 + nx * v.bend[1] * d, y: A.y + dy * 2 / 3 + ny * v.bend[1] * d }, B];
+      // only the part that has grown in (de Casteljau split at t)
+      const lerp = (p, q) => ({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t });
+      const p01 = lerp(P[0], P[1]), p12 = lerp(P[1], P[2]), p23 = lerp(P[2], P[3]);
+      const p012 = lerp(p01, p12), p123 = lerp(p12, p23), end = lerp(p012, p123);
+      growthContext.beginPath();
+      growthContext.moveTo(A.x, A.y);
+      growthContext.bezierCurveTo(p01.x, p01.y, p012.x, p012.y, end.x, end.y);
+      growthContext.strokeStyle = `rgba(${NATURE_WHITE}, ${alpha})`;
+      growthContext.stroke();
+    }
   }
 
   function render(time) {

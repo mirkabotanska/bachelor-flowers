@@ -17,7 +17,7 @@ import { uniforms, cloneUniforms } from '../lily/materials.js';
 // for how many, how big and how fast – change them here.
 export const FLOWER_SETTINGS = {
   MAX_FLOWERS: 14,
-  MAX_LEAVES: 40,                 // [v2] 12 -> 40: leaves also grow along roots that stay lit
+  MAX_LEAVES: 100,                // [v2] 12 -> 100: leaves grow along green roots and moving routes
   FLOWER_SIZE: [50, 75],          // px per flower unit (a petal is about 1 unit long)
   LEAF_SIZE: [34, 52],
   SIDE_VIEW_CHANCE: 0.5,          // share of flowers seen from the side / at an angle (with stem + leaves)
@@ -27,7 +27,9 @@ export const FLOWER_SETTINGS = {
   GROUP_SPREAD: [18, 48],         // px: flowers in a group sit this far from the centre
   GROUP_SCALE: [0.55, 0.85],      // flowers in a group are smaller
   LEAF_MIN_DISTANCE: 55,
-  GROW_SECONDS: 3.2,              // build-up: points -> wireframe -> flower, while it opens
+  GROW_SECONDS: 3.2,
+  LEAF_GROW_SECONDS: 1.3,
+  LEAF_BRIGHTNESS: 1.7,           // [v2] leaves were too dark next to the bright roots         // [v2] leaves build up faster than flowers (there are many, and on moving routes)              // build-up: points -> wireframe -> flower, while it opens
   WILT_SECONDS: 2.6,              // falls apart into dust when its root is gone (slower = stays longer)
   // [v2] how leaves go when their root is gone:
   //   'fall'   – they let go, fall down while turning and drifting a little, and darken (like autumn)
@@ -47,7 +49,7 @@ export const FLOWER_SETTINGS = {
   BREATH_SECONDS: [4.5, 6.5],     // each flower breathes at its own pace
   BREATH_AMOUNT: 0.06,
   FLOWER_DUST: 2500,              // dust per flower (lower = faster)
-  LEAF_DUST: 500,
+  LEAF_DUST: 300,                 // [v2] 500 -> 300 (there are many more leaves now)
 };
 
 // how different the flowers are from each other: [min, max] per flower
@@ -248,10 +250,11 @@ export class RootFlowers {
       const w = it.wilting ? clamp01((now - it.wilting) / exitSeconds) : 0;   // 0 -> 1: going away
       // build-up progress: 0 = nothing, then points, wireframe, and the solid flower (1 = fully built)
       // when it falls apart the build-up just stops where it was
-      const progress = it.wilting ? it.wiltFrom : ease(age / S.GROW_SECONDS);
+      const growSeconds = it.kind === 'leaf' ? S.LEAF_GROW_SECONDS : S.GROW_SECONDS;
+      const progress = it.wilting ? it.wiltFrom : ease(age / growSeconds);
       it.progress = progress;
       it.vis = THREE.MathUtils.smoothstep(progress, 0.25, 0.85) * (1 - THREE.MathUtils.smoothstep(w, 0.2, 0.7));
-      const grown = S.START_SCALE + (1 - S.START_SCALE) * easeOut(age / S.GROW_SECONDS);
+      const grown = S.START_SCALE + (1 - S.START_SCALE) * easeOut(age / growSeconds);
       it.outer.scale.setScalar(it.size * grown);
       let bright = 1, alpha = 1;
       if (leafExit && w > 0) {                                // [v2] leaves: fall or fold back instead of dust
@@ -294,7 +297,7 @@ export class RootFlowers {
       u.uWireDelay.value = m['Wire Delay']; u.uSolidDelay.value = m['Solid Delay']; u.uFade.value = m['Fade Length'];
       u.uPxScale.value = this.pxScale; u.uPointSize.value = this.pointSize;
       u.uPointBright.value = S.POINT_BRIGHTNESS; u.uWireBright.value = S.WIRE_BRIGHTNESS;
-      u.uCoreAlpha.value = alpha; u.uCoreBright.value = bright;
+      u.uCoreAlpha.value = alpha; u.uCoreBright.value = bright * (it.kind === 'leaf' ? S.LEAF_BRIGHTNESS : 1);
       u.uPetalGlow.value = m['Petal Glow'];
       u.uTime.value = now;
       u.uDissolve.value = leafExit ? 0 : w;
