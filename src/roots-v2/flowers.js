@@ -16,21 +16,21 @@ import { uniforms, cloneUniforms } from '../lily/materials.js';
 // The look of the flowers comes from your style 2 settings (and the flower sliders); these are first guesses
 // for how many, how big and how fast – change them here.
 export const FLOWER_SETTINGS = {
-  MAX_FLOWERS: 14,
+  MAX_FLOWERS: 26,                // [v2] 14 -> 26: more flowers
   MAX_LEAVES: 100,                // [v2] 12 -> 100: leaves grow along green roots and moving routes
-  FLOWER_SIZE: [50, 75],          // px per flower unit (a petal is about 1 unit long)
+  FLOWER_SIZE: [38, 58],          // [v2] 50-75 -> 38-58: smaller (px per flower unit, a petal is about 1 unit long)
   LEAF_SIZE: [34, 52],
-  SIDE_VIEW_CHANCE: 0.5,          // share of flowers seen from the side / at an angle (with stem + leaves)
+  SIDE_VIEW_CHANCE: 0,            // [v2] 0.5 -> 0: all from the top (share seen from the side, with stem + leaves)
   SIDE_FLOWER_SIZE: [36, 52],     // side views are a bit smaller (the stem makes them taller)
   FLOWER_DEPTH: 40,               // how far in front of the roots the flowers sit
-  FLOWER_MIN_DISTANCE: 70,        // px between flower groups
+  FLOWER_MIN_DISTANCE: 55,        // [v2] 70 -> 55: px between flower groups
   GROUP_SPREAD: [18, 48],         // px: flowers in a group sit this far from the centre
   GROUP_SCALE: [0.55, 0.85],      // flowers in a group are smaller
   LEAF_MIN_DISTANCE: 55,
-  GROW_SECONDS: 3.2,
+  GROW_SECONDS: 4.2,              // [v2 slower] 3.2 -> 4.2
   LEAF_GROW_SECONDS: 1.3,
-  LEAF_BRIGHTNESS: 1.7,           // [v2] leaves were too dark next to the bright roots         // [v2] leaves build up faster than flowers (there are many, and on moving routes)              // build-up: points -> wireframe -> flower, while it opens
-  WILT_SECONDS: 2.6,              // falls apart into dust when its root is gone (slower = stays longer)
+  LEAF_BRIGHTNESS: 1.7,           // [v2] leaves were too dark next to the bright roots
+  WILT_SECONDS: 3.2,              // [v2 slower] 2.6 -> 3.2
   // [v2] how leaves go when their root is gone:
   //   'fall'   – they let go, fall down while turning and drifting a little, and darken (like autumn)
   //   'shrink' – they fold back into the root (the opposite of growing)
@@ -46,8 +46,8 @@ export const FLOWER_SETTINGS = {
   POINT_BRIGHTNESS: 1.4,
   WIRE_BRIGHTNESS: 0.6,           // the wireframe is dense on small flowers, so it is dimmer than on page 1
   START_SCALE: 0.8,               // grows a little while it builds (1 = no growing)
-  BREATH_SECONDS: [4.5, 6.5],     // each flower breathes at its own pace
-  BREATH_AMOUNT: 0.06,
+  // breathing: see BREATH below (all flowers and the roots breathe together)
+  BREATH_AMOUNT: 0.16,            // [v2] 0.06 -> 0.16: petals clearly close and open
   FLOWER_DUST: 2500,              // dust per flower (lower = faster)
   LEAF_DUST: 300,                 // [v2] 500 -> 300 (there are many more leaves now)
 };
@@ -74,6 +74,11 @@ export const VARIETY = {
     [0.82, 0.3, 0.95],                   // lilac
   ],
 };
+
+// [v2] one shared breath for the whole wall: flowers open and close, roots glow more and less, all in sync
+export const BREATH = { SECONDS: 6 };           // one breath (in + out)
+// 0 = breathed out (flowers most closed, roots dimmest) ... 1 = breathed in
+export const breathAt = (t) => 0.5 - 0.5 * Math.cos((t / BREATH.SECONDS) * Math.PI * 2);
 
 const rand = (a, b) => a + Math.random() * (b - a);
 const pick = (list) => list[Math.floor(Math.random() * list.length)];
@@ -228,7 +233,7 @@ export class RootFlowers {
     this.items.push({
       kind, x, y, anchor, p, size, dust, lily, fibres, u: own, fu, outer,
       born: this.now ?? 0, wilting: null, wiltFrom: 1, progress: 0, lastBloom: -1,
-      breath: rand(...this.S.BREATH_SECONDS), phase: rand(0, Math.PI * 2),
+      phase: rand(0, Math.PI * 2),
       order, clearDepth,
     });
   }
@@ -279,7 +284,7 @@ export class RootFlowers {
         let bloom = 0.12 + (open - 0.12) * ease((age - 0.3) / S.GROW_SECONDS);
         if (age > S.GROW_SECONDS) {
           const bt = age - S.GROW_SECONDS;
-          bloom += S.BREATH_AMOUNT * Math.min(bt / 2, 1) * Math.sin((bt / it.breath) * Math.PI * 2 + it.phase);
+          bloom += S.BREATH_AMOUNT * Math.min(bt / 2, 1) * (breathAt(now) * 2 - 1);   // [v2] same rhythm for all
         }
         if (Math.abs(bloom - it.lastBloom) > 0.002) { it.lily.setBloom(clamp01(bloom)); it.lastBloom = bloom; }
       }

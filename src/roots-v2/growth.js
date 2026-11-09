@@ -4,7 +4,7 @@
 //  - the camera starts when you first open the page and stops when you leave it
 //  - "Use mouse instead of camera": hold the mouse button on the growth view = the flashlight is on
 import './roots.css';
-import { RootFlowers } from './flowers.js';                     // [added] flowers + leaves on the roots
+import { RootFlowers, breathAt } from './flowers.js';                     // [added] flowers + leaves on the roots
 
 const MARKUP = `<h1 class="lab__title">Roots v2 – working copy (page 4 stays as it was)</h1>
     <div class="fake">
@@ -69,32 +69,32 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   const LIGHT_HOLD_SECONDS = 0.2;
 
   const GROWTH_SCALE = 4;
-  const ROOTS_PER_SPOT = 10;                 // [changed] 5 -> 10: fuller from the start
+  const ROOTS_PER_SPOT = 7;                  // [v2] 10 -> 7: spreads less from one light
   const STEP_LENGTH = 6;
-  const GROW_SPEED = 90;
+  const GROW_SPEED = 50;                     // [v2 slower] 90 -> 50
   const WOBBLE = 0.22;                       // [changed] calmer, wandering lines (image 2)
   const STEER = 0.35;
   const MAX_TURN_FROM_HOME = Math.PI / 3;    // [changed] roots stay in their own direction -> no empty gaps
   const MAX_POINTS = 14000;                  // [changed] more roots and twigs
 
-  const MIN_BURST_STEPS = 8;                // [changed] 25-75 -> 8-20: short roots per press
-  const MAX_BURST_STEPS = 20;
+  const MIN_BURST_STEPS = 6;                // [v2] 8-20 -> 6-15: shorter roots per press
+  const MAX_BURST_STEPS = 15;
 
-  const SPROUT_SECONDS = 3;
+  const SPROUT_SECONDS = 4.5;               // [v2 slower] 3 -> 4.5
   const ROOTS_PER_SPROUT = 2;
 
-  const SHRINK_DELAY_SECONDS = 0.6;         // [changed] 3 -> 0.6: unlit roots start to disappear quickly
+  const SHRINK_DELAY_SECONDS = 1.0;         // [v2 slower] 0.6 -> 1
 
   // [added] disappearing: roots dissolve into drifting particles (or just fade, see the checkbox)
-  const DISSOLVE_SECONDS = 1.0;          // [changed] 0.6 -> 1: how long a root takes to fall apart
-  const LINE_FADE_SECONDS = 0.5;         // each piece of line fades out (instead of switching off)
+  const DISSOLVE_SECONDS = 1.6;          // [v2 slower] 1 -> 1.6
+  const LINE_FADE_SECONDS = 0.8;         // [v2 slower] 0.5 -> 0.8
   const PARTICLE_FADE_IN = 0.35;         // particles fade in...
   const PARTICLE_LOOSEN = 0.7;           // ...and sit still on the line before drifting off (s)
   const PARTICLE_EVERY = 1;              // one particle per this many root points
-  const PARTICLE_LIFE_MIN = 0.9;         // seconds
-  const PARTICLE_LIFE_MAX = 2;
-  const PARTICLE_SPEED = 22;             // px/s drift
-  const PARTICLE_RISE = 12;              // px/s upwards
+  const PARTICLE_LIFE_MIN = 1.4;         // [v2 slower] 0.9 -> 1.4
+  const PARTICLE_LIFE_MAX = 3;           // [v2 slower] 2 -> 3
+  const PARTICLE_SPEED = 14;             // [v2 slower] 22 -> 14
+  const PARTICLE_RISE = 8;               // [v2 slower] 12 -> 8
   const PARTICLE_SIZE = 1.2;             // px
   const PARTICLE_RANDOMNESS = 0.6;       // 0 = strictly in order, 1 = very scattered timing
   const ROOT_JITTER = 0.35;              // s: roots don't all start dissolving at the same moment
@@ -121,7 +121,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   const TIP_STEPS = 10;
   const ARRIVE_DISTANCE = 30;
   const BRANCH_DISTANCE = 70;
-  const BRANCH_COOLDOWN_SECONDS = 0.5;
+  const BRANCH_COOLDOWN_SECONDS = 0.8;     // [v2 slower] 0.5 -> 0.8
 
   const GLOW_RADIUS = 110;
   const GLOW_STRENGTH = 0.22;
@@ -130,16 +130,16 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
 
   // [added] look: electric discharge first, then it calms down into green roots
   const SPARK_SECONDS = 1.2;            // first moments of a new root: faster and more jagged
-  const SPARK_SPEED = 2.4;              // speed multiplier during the spark
+  const SPARK_SPEED = 1.8;              // [v2 slower] 2.4 -> 1.8
   const SPARK_WOBBLE = 0.55;            // jaggedness during the spark
   const TO_GREEN_SECONDS = 2.5;         // how long a part of a root stays 'electric' before it turns green
   const ELECTRIC_COLOR = [205, 225, 255];
   const GREEN_COLOR = [150, 235, 170];
-  const LINE_WIDTH = 1.6;               // trunk width; branches get thinner
+  const LINE_WIDTH = 1.4;               // [v2] 1.6 -> 1.4: trunk width; branches get thinner
   const GLOW_WIDTH = 5;                 // soft glow around each line (x line width)
   const GLOW_ALPHA = 0.12;
   const CHUNK = 4;                      // points per drawn piece (colour/width change along a root)
-  const FLASH_SECONDS = 0.9;            // bright flash where roots are planted
+  const FLASH_SECONDS = 1.3;            // [v2 slower] 0.9 -> 1.3
   const FLASH_RADIUS = 140;
 
   // [added] light near existing roots: a smaller cluster appears right at the light and reaches out to connect
@@ -151,9 +151,9 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   const CONNECT_REACH = 375;            // how far a connecting root may reach to find another root
   const MAX_CONNECTORS = 3;             // connecting roots from a new cluster (to different roots)
   const MAX_REACHERS = 2;               // existing roots that send a branch towards the light
-  const REGROW_SECONDS = 1.4;           // while the light stays, something new grows this often
+  const REGROW_SECONDS = 2.2;           // [v2 slower] 1.4 -> 2.2
   const SPOT_REUSE = 40;                // a new cluster this close to another one adds to it
-  const CHARGE_SECONDS = 0.9;           // how long a pulse of light runs through connected roots
+  const CHARGE_SECONDS = 1.3;           // [v2 slower] 0.9 -> 1.3
   const CONNECT_FLASH_RADIUS = 70;
 
   // [added] pressing / shining on the same spot again (or more people at once) makes it grow stronger
@@ -179,7 +179,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   const TWIG_STEPS_FAST = 5;            // ...and when moving fast
   const TWIG_GAP_SLOW = [4, 10];        // steps between twigs when slow (min, max)
   const TWIG_GAP_FAST = [22, 40];       // ...and when fast
-  const TIP_FORK_EVERY_SLOW = 0.35;     // s between small forks at the light when slow (none when fast)
+  const TIP_FORK_EVERY_SLOW = 0.55;     // [v2 slower] 0.35 -> 0.55
   const LEADER_TWIG_STEPS = 9;
   const LEADER_TWIG_MIN_GAP = 10;
   const LEADER_TWIG_MAX_GAP = 26;
@@ -222,14 +222,15 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   let flowers = null;                            // [added] 3D layer with flowers + leaves (made when the page opens)
   let pendingLeaves = [];
   let pendingBranchLeaves = [];                  // [v2] leaves along roots that turned green
-  let veins = [];                                // [v2] thin lines between green roots                        // [added] leaves appear a moment after roots are planted
+  let veins = [];                                // [v2] thin lines between green roots
+  let leaves2d = [];                             // [v2] flat leaves on the roots                        // [added] leaves appear a moment after roots are planted
   const FLOWER_ON_CONNECT = 0.85;                // chance that flowers bloom where two roots connect
-  const FLOWERS_ON_CONNECT = [2, 4];             // ...a small group of this many smaller flowers
-  const FLOWERS_AT_BOOST = [1, 2];
+  const FLOWERS_ON_CONNECT = [3, 5];             // [v2] more: a small group of this many smaller flowers
+  const FLOWERS_AT_BOOST = [2, 3];               // [v2] 1-2 -> 2-3
   const FLOWER_AT_BOOST = 2;                     // a spot boosted this many times gets a flower
   const FLOWER_ROOT_EXTRA_SECONDS = 4;           // [added] roots that carry flowers wait this much longer before they dissolve
   const flowerSpots = new Set();                 // [added] spots with flowers on them
-  const FLOWER_ON_HOLD = 0.2;                    // chance per regrow (holding still) of a flower at that spot
+  const FLOWER_ON_HOLD = 0.35;                   // [v2] 0.2 -> 0.35: chance per regrow (holding still) of a flower at that spot
   const LEAVES_PER_SPOT = [1, 3];
   const LEAF_CHANCE = 0.65;                      // chance that a new spot gets leaves at all
   const ROSETTE_CHANCE = 0.3;                    // ...a small leaf cluster instead of single leaves off a root
@@ -254,12 +255,26 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   const ROUTE_LEAF_CHANCE = 0.6;                 // ...with this chance (also when it's still electric)
   const ROUTE_LEAF_SCALE = [0.55, 0.85];
 
+  // [v2] leaves on the roots are flat (2D, drawn with the roots) - much lighter than 3D. Only flowers stay 3D.
+  // They grow out of the root (the base stays on it), sway a tiny bit, and crumble into particles when it goes.
+  const LEAF2D_LENGTH = [16, 30];                // px (times the scale above)
+  const LEAF2D_WIDTH = [0.32, 0.48];             // width compared to its length
+  const LEAF2D_GROW_SECONDS = 1.6;               // how long it takes to grow out
+  const LEAF2D_SPACING = 14;                     // px: not closer to another leaf than this
+  const LEAF2D_WHITE_SHARE = 0.2;                // some are white with a green vein instead of green with a white one
+  const LEAF2D_SWAY = 0.05;                      // rad: tiny movement, like breathing
+  const LEAF2D_GO_EARLY_LATE = [-0.35, 0.3];     // s: each goes a bit before or after its piece of root
+  const LEAF2D_FADE_SECONDS = 0.7;
+  const LEAF2D_PARTICLES = [6, 14];              // particles it crumbles into...
+  const LEAF2D_SPREAD = [0.4, 1.7];              // ...and how far they spread (some crumble, some scatter)
+  const LEAF2D_MAX = 400;
+
   // [added v2] the 'nature' look (from Mirka's sketch): instead of thin electric strokes, green roots are drawn
   // as smooth shapes that swell and taper, in two tones, with a web of thin veins between them (like a leaf close up)
   const NATURE_LOOK_FROM = 0.3;                  // nature level where the new look starts to show...
   const NATURE_LOOK_TO = 0.9;                    // ...and where it has fully replaced the electric line
-  const NATURE_THICKNESS = 5.5;                  // px: the thickest roots; branches get thinner (x0.72 per level)
-  const NATURE_MIN_THICKNESS = 1.4;
+  const NATURE_THICKNESS = 4.6;                  // [v2] 5.5 -> 4.6 px: the thickest roots; branches get thinner (x0.72 per level)
+  const NATURE_MIN_THICKNESS = 1.2;
   const NATURE_TIP_TAPER = 0.75;                 // 0.75 = after NATURE_TAPER_LENGTH a root is a quarter of its base width
   const NATURE_TAPER_LENGTH = 140;               // points (a point is 6 px), counted along parent + branch together
   const NATURE_KEEP_TONE = 0.75;                 // chance a branch has the same colour as the root it grows from
@@ -275,8 +290,13 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   const VEIN_FREE_CHANCE = 0.45;                 // ...otherwise sometimes a short loose vein that just curls off
   const VEIN_WIDTH = 0.8;
   const VEIN_ALPHA = 0.55;
-  const VEIN_GROW_SECONDS = 0.7;
+  const VEIN_GROW_SECONDS = 1.2;
   const VEIN_MAX = 700;
+
+  // [v2] the roots breathe with the flowers (same rhythm, BREATH in flowers.js) - set to 0 to switch off
+  const ROOT_BREATH_EXPAND = 0.02;               // each cluster grows 2% bigger on the in-breath, 2% smaller on the out-breath
+  const LEAF_BREATH_FOLD = 0.35;                 // leaves fold this much closer to the root (and narrow) on the out-breath
+
   const LEAF_ON_ROUTE_CHANCE = 0.12;             // chance of a leaf at a fork when drawing a route slowly
   const alive = (r) => roots.includes(r) && r.dissolving === undefined;
   let leader = null;                             // [added] the root that follows a moving light
@@ -605,6 +625,113 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
     }
   }
 
+  // [v2] a flat leaf on a root at point `index`; dir = angle it grows in (null = random side)
+  function addLeaf(root, index, dir = null, scale = 1) {
+    if (leaves2d.length >= LEAF2D_MAX || index < 1 || index >= root.points.length - 1) return false;
+    const pt = root.points[index];
+    if (leaves2d.some((l) => !l.goAt && getDistance(l.root.points[l.index] ?? pt, pt) < LEAF2D_SPACING)) return false;
+    const along = getAngle(root.points[index - 1], root.points[index + 1]);
+    const side = dir === null ? (Math.random() < 0.5 ? -1 : 1) : Math.sign(Math.sin(dir - along)) || 1;
+    leaves2d.push({
+      root, index, side,
+      spread: dir === null ? randomBetween(0.5, 1.1) : Math.min(Math.abs(Math.atan2(Math.sin(dir - along), Math.cos(dir - along))), 1.3),
+      length: randomBetween(...LEAF2D_LENGTH) * scale,
+      width: randomBetween(...LEAF2D_WIDTH),
+      bend: randomBetween(-0.25, 0.25),
+      white: Math.random() < LEAF2D_WHITE_SHARE,
+      born: now, phase: Math.random() * 10, goAt: null,
+      anchor: leafAnchor(root, index),
+    });
+    return true;
+  }
+
+  // leaves whose piece of root goes: crumble (a bit before or after it), then they're removed
+  function updateLeaves2d() {
+    for (const l of leaves2d) {
+      if (l.goAt !== null) continue;
+      const a = l.anchor();
+      if (a === true) continue;
+      l.goAt = Math.max(now, (typeof a === 'number' ? a : now) + randomBetween(...LEAF2D_GO_EARLY_LATE));
+      l.crumble = true;
+    }
+    leaves2d = leaves2d.filter((l) => l.goAt === null || now < l.goAt + LEAF2D_FADE_SECONDS);
+  }
+
+  // [v2] the point a cluster breathes around: its spot, or where its first root started
+  function centerOf(root) {
+    if (root.center) return root.center;
+    const spot = root.parent ? null : spots.find((sp) => sp.id === root.spot);
+    root.center = root.parent && roots.includes(root.parent) ? centerOf(root.parent)
+      : spot ? { x: spot.x, y: spot.y } : { x: root.points[0].x, y: root.points[0].y };
+    return root.center;
+  }
+
+  // where the leaf is right now: base on the drawn root line, pointing out to its side
+  function leafPose(l, lines) {
+    const line = lines.get(l.root) ?? l.root.points;
+    const i = Math.min(l.index, line.length - 2);
+    const p = line[i], a = line[Math.max(i - 1, 0)], b = line[i + 1];
+    const fold = 1 - LEAF_BREATH_FOLD * (1 - breathAt(now));            // [v2] 1 = open (in-breath), smaller = folded in
+    const angle = getAngle(a, b) + l.side * l.spread * fold + Math.sin(now * 0.8 + l.phase) * LEAF2D_SWAY;
+    l.fold = fold;
+    return { x: p.x, y: p.y, angle };
+  }
+
+  function drawLeaves2d(lines) {
+    for (const l of leaves2d) {
+      const pose = leafPose(l, lines);
+      const grow = 1 - Math.pow(1 - Math.min((now - l.born) / LEAF2D_GROW_SECONDS, 1), 3);   // eases out
+      const going = l.goAt !== null ? Math.min(Math.max((now - l.goAt) / LEAF2D_FADE_SECONDS, 0), 1) : 0;
+      if (l.crumble && now >= l.goAt) { crumbleLeaf(l, pose, grow); l.crumble = false; }
+      const alpha = (1 - going) * (l.root.opacity ?? 1);
+      if (alpha < 0.01 || grow < 0.01) continue;
+      const L = l.length * grow, W = L * l.width * (0.7 + 0.3 * (l.fold ?? 1));   // [v2] narrower when folded
+      const fill = l.white ? NATURE_WHITE : NATURE_GREEN, rib = l.white ? NATURE_GREEN : NATURE_WHITE;
+      growthContext.save();
+      growthContext.translate(pose.x, pose.y);
+      growthContext.rotate(pose.angle);
+      // leaf shape: from the base (on the root) to the pointed tip, a little curved
+      growthContext.beginPath();
+      growthContext.moveTo(0, 0);
+      growthContext.bezierCurveTo(L * 0.25, -W * 0.95 + l.bend * W, L * 0.7, -W * 0.7 + l.bend * W, L, l.bend * W);
+      growthContext.bezierCurveTo(L * 0.7, W * 0.7 + l.bend * W, L * 0.25, W * 0.95 + l.bend * W, 0, 0);
+      growthContext.closePath();
+      growthContext.strokeStyle = `rgba(${fill}, ${0.12 * alpha})`;
+      growthContext.lineWidth = 5;
+      growthContext.stroke();
+      growthContext.fillStyle = `rgba(${fill}, ${0.9 * alpha})`;
+      growthContext.fill();
+      // middle vein
+      growthContext.beginPath();
+      growthContext.moveTo(0, 0);
+      growthContext.quadraticCurveTo(L * 0.5, l.bend * W * 0.6, L * 0.85, l.bend * W * 0.9);
+      growthContext.strokeStyle = `rgba(${rib}, ${0.8 * alpha})`;
+      growthContext.lineWidth = 0.8;
+      growthContext.stroke();
+      growthContext.restore();
+    }
+  }
+
+  // particles spread over the leaf; how far they go differs per leaf
+  function crumbleLeaf(l, pose, grow) {
+    const n = Math.round(randomBetween(...LEAF2D_PARTICLES) * grow);
+    const spread = randomBetween(...LEAF2D_SPREAD);
+    const color = l.white ? NATURE_WHITE : NATURE_GREEN;
+    const cos = Math.cos(pose.angle), sin = Math.sin(pose.angle);
+    for (let k = 0; k < n; k++) {
+      const u = Math.random() * l.length * grow, v = (Math.random() - 0.5) * l.length * grow * l.width * Math.sin(Math.PI * u / (l.length * grow || 1));
+      const a = Math.random() * Math.PI * 2, sp = PARTICLE_SPEED * spread * (0.3 + Math.random());
+      particles.push({
+        x: pose.x + u * cos - v * sin, y: pose.y + u * sin + v * cos,
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - PARTICLE_RISE * spread,
+        born: now + Math.random() * LEAF2D_FADE_SECONDS * 0.7,
+        life: randomBetween(PARTICLE_LIFE_MIN, PARTICLE_LIFE_MAX),
+        size: PARTICLE_SIZE * (0.6 + Math.random() * 0.8),
+        color, alpha: 0.9,
+      });
+    }
+  }
+
   // [v2] leaves along the route of a moving light, a little behind its tip
   function planRouteLeaves(root) {
     root.routeLeafNext ??= Math.round(ROUTE_LEAF_EVERY * randomBetween(0.3, 1));
@@ -635,20 +762,18 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
     return () => (alive(root) && (root.cut ?? 0) <= index) || (root.points[index]?.dissolveAt ?? now);
   }
   function growBranchLeaves() {
-    if (!flowers) return;
     const due = pendingBranchLeaves.filter((l) => now >= l.at);
     pendingBranchLeaves = pendingBranchLeaves.filter((l) => now < l.at);
     for (const { root, index } of due) {
       if (!alive(root) || index >= root.points.length - 1 || (root.cut ?? 0) > index) continue;
       const pt = root.points[index], next = root.points[index + 1];
       const dir = getAngle(pt, next) + (Math.random() < 0.5 ? -1 : 1) * randomBetween(0.5, 1.1);
-      flowers.tryLeaves(pt.x, pt.y, leafAnchor(root, index), dir, randomBetween(...(root.routeLeaf ? ROUTE_LEAF_SCALE : BRANCH_LEAF_SCALE)), 20);
+      addLeaf(root, index, dir, randomBetween(...(root.routeLeaf ? ROUTE_LEAF_SCALE : BRANCH_LEAF_SCALE)));   // [v2] flat leaf
     }
   }
 
   // [added] put 1-2 leaf clusters on the roots of a spot
   function growLeaves() {
-    if (!flowers) return;
     const due = pendingLeaves.filter((l) => now >= l.at);
     pendingLeaves = pendingLeaves.filter((l) => now < l.at);
     for (const { spot } of due) {
@@ -659,9 +784,11 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
         const r = own[Math.floor(Math.random() * own.length)];
         const index = Math.floor((r.points.length - 1) * randomBetween(0.4, 0.8));
         const pt = r.points[index], next = r.points[Math.min(index + 1, r.points.length - 1)];
-        const dir = Math.random() < ROSETTE_CHANCE ? null                // leaves branch off the root, to one side
-          : getAngle(pt, next) + (Math.random() < 0.5 ? -1 : 1) * randomBetween(0.4, 1.0);
-        flowers.tryLeaves(pt.x, pt.y, leafAnchor(r, index), dir);
+        if (Math.random() < ROSETTE_CHANCE) {                            // [v2] a little cluster: leaves on both sides
+          addLeaf(r, index, null, 1.1); addLeaf(r, Math.min(index + 2, r.points.length - 2), null, 1.0);
+        } else {
+          addLeaf(r, index, getAngle(pt, next) + (Math.random() < 0.5 ? -1 : 1) * randomBetween(0.4, 1.0), 1.1);
+        }
       }
     }
   }
@@ -1057,6 +1184,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
   function updateRoots(lights, deltaSeconds) {
     growLeaves();                                                      // [added]
     growBranchLeaves();                                                // [v2]
+    updateLeaves2d();                                                  // [v2]
     // [v2] veins: drop the ones whose roots are going (they fade out quickly), plan new ones
     for (const v of veins) if (!v.dying && (!alive(v.a) || (v.b && !alive(v.b)))) v.dying = now;
     veins = veins.filter((v) => !(v.dying && now - v.dying > 0.4));
@@ -1168,7 +1296,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
             }));
             if (flowers && Math.random() < LEAF_ON_ROUTE_CHANCE) {          // [added] now and then a leaf on the route
               const at = leader.points.length - 1, tip = leader.points[at], lead = leader;
-              flowers.tryLeaves(tip.x, tip.y, leafAnchor(lead, at), leader.angle + side * randomBetween(0.5, 1.1));
+              addLeaf(lead, at - 1, leader.angle + side * randomBetween(0.5, 1.1), 0.8);   // [v2] flat leaf
             }
           }
           tipForkCooldown = TIP_FORK_EVERY_SLOW / Math.max(branchiness, 0.05) * randomBetween(0.7, 1.3);
@@ -1304,6 +1432,12 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
 
     const smoothed = new Map();                                             // [v2]
     for (const root of roots) smoothLine(root, smoothed);                   // [v2] every root's drawn line first
+    // [v2] breathing: every cluster expands / contracts a little around where it started
+    const expand = 1 + ROOT_BREATH_EXPAND * (breathAt(now) * 2 - 1);
+    if (ROOT_BREATH_EXPAND) for (const root of roots) {
+      const c = centerOf(root), line = smoothed.get(root);
+      smoothed.set(root, line.map((p) => ({ x: c.x + (p.x - c.x) * expand, y: c.y + (p.y - c.y) * expand })));
+    }
     for (const root of roots) {
       const { opacity, taperSteps, depth } = root;
       const points = root.points;
@@ -1343,6 +1477,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
     // [v2] nature look on top: veins, then the green roots, then the white ones
     growthContext.globalCompositeOperation = "source-over";
     drawVeins(smoothed);
+    drawLeaves2d(smoothed);                                                 // [v2] flat leaves, under the roots
     const natureRoots = roots.filter((r) => (r.nature ?? 0) > NATURE_LOOK_FROM);
     for (const white of [false, true]) {
       for (const root of natureRoots) if (isWhite(root) === white) drawNatureRoot(root, smoothed.get(root));
