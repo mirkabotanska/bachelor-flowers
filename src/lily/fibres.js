@@ -27,6 +27,10 @@ export const fibreUniforms = {
   uDustFraction: { value: 1 },
   uPixelRatio: { value: 1 },
   uThreadOpacity: { value: 0 },
+  uDissolve: { value: 0 },        // page 6: 0 -> 1 the dust breaks away and drifts off (0 = no effect)
+  uDissolveDist: { value: 0.6 },  // how far the loose dust flies (flower units)
+  uUp: { value: new THREE.Vector3(0, 1, 0) },   // 'up' on screen, in the flower's own space
+  uRise: { value: 0.3 },          // how far the loose dust rises (flower units)
 };
 
 // rim = 1 where we look along the surface (silhouette), 0 where we look straight at it
@@ -67,6 +71,7 @@ const GLOW_FS = /* glsl */ `
 
 const DUST_VS = /* glsl */ `
   uniform float uTime, uReveal, uDustDist, uDustSpeed, uDustOpacity, uDustSize, uPixelRatio, uHalo, uDustFraction;
+  uniform float uDissolve, uDissolveDist, uRise; uniform vec3 uUp;
   attribute vec3 aBase; attribute vec3 aNormal; attribute vec3 aDir; attribute vec3 aColor;
   attribute vec4 aRand;          // x: speed, y: phase, z: growth, w: size
   varying vec3 vColor; varying float vAlpha;
@@ -82,9 +87,23 @@ const DUST_VS = /* glsl */ `
            + vec3(sin(uTime + aRand.y * 20.0), cos(uTime * 0.8 + aRand.y * 13.0), sin(uTime * 0.6 + aRand.y * 7.0)) * 0.01;
     vColor = mix(aColor, vec3(1.0), 0.35) * 1.6;
     vAlpha = uDustOpacity * grow * sin(3.14159 * life) * mix(0.4, 1.0 + uHalo * 0.5, rim);
+    float sizeBoost = 1.0;
+    if (uDissolve > 0.0) {
+      // breaking apart: each grain lets go once (tips first, like the petals), drifts off and up, and fades
+      float rel = (1.0 - aRand.z) * 0.45 + fract(aRand.y * 13.7) * 0.25;
+      float t = clamp((uDissolve - rel) / 0.3, 0.0, 1.0);
+      if (t > 0.0) {
+        p = aBase + dir * uDissolveDist * t * (0.3 + aRand.x) + uUp * uRise * t * t
+          + vec3(sin(uTime * 2.0 + aRand.y * 20.0), cos(uTime * 1.7 + aRand.y * 13.0), sin(uTime * 1.3 + aRand.y * 7.0)) * 0.03 * t;
+        vAlpha = uDustOpacity * 1.4 * grow * smoothstep(0.0, 0.1, t) * (1.0 - t);   // grow: only parts that were built
+        sizeBoost = 1.3;
+      } else {
+        vAlpha *= 1.0 - smoothstep(0.0, 0.3, uDissolve);           // the normal dust calms down
+      }
+    }
     vec4 mv = modelViewMatrix * vec4(p, 1.0);
     gl_Position = projectionMatrix * mv;
-    gl_PointSize = vAlpha > 0.002 ? uDustSize * aRand.w * uPixelRatio : 0.0;
+    gl_PointSize = vAlpha > 0.002 ? uDustSize * aRand.w * uPixelRatio * sizeBoost : 0.0;
   }`;
 const DUST_FS = /* glsl */ `
   varying vec3 vColor; varying float vAlpha;

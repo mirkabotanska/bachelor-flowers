@@ -22,6 +22,7 @@ export const uniforms = {
   uPetalGlow: { value: 0.06 },
   uCoreAlpha: { value: 1 },            // used by style 2 (1 = no change, style 1 never touches these)
   uCoreBright: { value: 1 },
+  uDissolve: { value: 0 },             // page 6: 0 -> 1 the flower falls apart into dust (0 = no effect)
 };
 
 // When does each version of a vertex appear?  x = points, y = wireframe, z = solid
@@ -59,9 +60,13 @@ export function createSolidMaterial(u = uniforms) {
       .replace('#include <common>', `#include <common>
         ${STAGES}
         attribute float aGrowth; attribute float aU; attribute float aV; attribute float aPart; attribute float aSeed;
-        varying float vU; varying float vV; varying float vPart; varying float vSeed; varying float vSolid;`)
+        varying float vU; varying float vV; varying float vPart; varying float vSeed; varying float vSolid;
+        uniform float uDissolve;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
-        vU = aU; vV = aV; vPart = aPart; vSeed = aSeed; vSolid = buildStages(aGrowth).z;`);
+        vU = aU; vV = aV; vPart = aPart; vSeed = aSeed; vSolid = buildStages(aGrowth).z;
+        // dissolve: the tips go first, every vertex at a slightly random moment
+        float relV = (1.0 - aGrowth) * 0.45 + fract(sin(dot(position, vec3(12.9898, 78.233, 37.719))) * 43758.5453) * 0.25;
+        vSolid *= 1.0 - smoothstep(relV, relV + 0.25, uDissolve);`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
         uniform vec3 uTint; uniform float uSpotAmount, uSpotSize, uPetalGlow, uCoreAlpha, uCoreBright;
