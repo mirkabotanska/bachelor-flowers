@@ -68,7 +68,7 @@ const fibres = new Fibres(lily, params);          // style 2
 swayGroup.add(fibres);
 scene.add(swayGroup);
 const tracking = new Tracking(lily, camera, renderer, params);   // style 3 (2D overlay)
-const rootsPage = createRootsPage();                             // page 4 (its own page, camera + roots)
+const rootsPage = createRootsPage(params);                           // page 4 (its own page, camera + roots)
 
 // ------------------------------------------------------------------ glow
 const composer = new EffectComposer(renderer);
@@ -218,7 +218,7 @@ function alertSmall(text) {
 }
 window.addEventListener('keydown', (e) => {
   if (e.key === 'h') gui.show(gui._hidden);                     // H hides the panel
-  if (['1', '2', '3', '4'].includes(e.key)) setStyle(Number(e.key)); // 1–4 switch the style
+  if (['1', '2', '3', '4', '5'].includes(e.key)) setStyle(Number(e.key)); // 1–5 switch the style
 });
 
 // ------------------------------------------------------------------ styles (buttons at the top)
@@ -226,8 +226,8 @@ const styleButtons = [...document.querySelectorAll('#styles button')];
 function setStyle(n) {
   params.Style = n; save();
   styleButtons.forEach((b) => b.classList.toggle('active', Number(b.dataset.style) === n));
-  folders['Build-up'].show(n === 1);
-  folders['2 · Fibres'].show(n === 2);
+  folders['Build-up'].show(n === 1 || n === 5);
+  folders['2 · Fibres'].show(n === 2 || n === 5);
   folders['Breathing animation'].show(n === 2);
   folders['3 · Tracking'].show(n === 3); folders['3 · Extra effects'].show(n === 3);
   if (n === 3) folders['3 · Tracking'].open();
@@ -239,7 +239,7 @@ function setStyle(n) {
   isRoots ? gui.hide() : gui.show();
   isRoots ? rootsPage.show() : rootsPage.hide();
   if (isRoots) return;
-  if (n === 2) folders['2 · Fibres'].open();
+  if (n === 2 || n === 5) folders['2 · Fibres'].open();
   params['Auto Play'] = true;
   gui.controllersRecursive().forEach((c) => c.updateDisplay());
   replay();
@@ -253,7 +253,8 @@ function frame() {
 
   const dt = Math.min(t - (frame.last ?? t), 0.1); frame.last = t;
   if (params.Style === 4) { requestAnimationFrame(frame); return; }     // roots page runs its own loop
-  if (params.Style === 3) styleTracking(t, dt);
+  if (params.Style === 5) styleBuildDust(t);
+  else if (params.Style === 3) styleTracking(t, dt);
   else if (params.Style === 2) styleFibres(t);
   else styleBuildUp(t);
 
@@ -392,7 +393,34 @@ function styleTracking(t, dt) {
   tracking.update(dt, S(p, 0.1, 0.7));                                    // boxes start while the flower appears
 }
 
-setStyle([1, 2, 3, 4].includes(params.Style) ? params.Style : 1);
+// ---- style 5: the build-up from style 1, with dust from style 2 streaming out of the vertices
+function styleBuildDust(t) {
+  styleBuildUp(t);                                   // points -> wireframe -> flower, breathing (unchanged)
+  fibres.visible = true;
+
+  // breathing in/out (same rhythm as the petals), for the 'Breathing animation' values of the dust
+  let spread = 1;
+  if (params['Auto Play'] && breathStart !== null) {
+    const bt = t - breathStart;
+    const wave = Math.sin((bt / params['Breath Length (s)']) * Math.PI * 2);
+    spread = 1 - Math.min(bt / 2, 1) * (0.5 + 0.5 * (params['Breath Reverse'] ? -wave : wave));
+  }
+  const v = { ...params };
+  for (const [name, a] of Object.entries(params._breathAnims)) {
+    const curve = BREATH_CURVES[a.curve] ?? BREATH_CURVES.Smooth;
+    v[name] = THREE.MathUtils.lerp(a.in, a.out, curve(spread));
+  }
+  applyFibreParams(v);
+  fibreUniforms.uOpacity.value = 0;                  // no streaks, only dust
+  fibreUniforms.uStrandFraction.value = 0;
+  fibreUniforms.uDustFraction.value = 1;
+  fibreUniforms.uReveal.value = uniforms.uProgress.value;   // dust appears as the vertices appear
+  fibreUniforms.uBreath.value = 0;
+  fibreUniforms.uTime.value = t;
+  fibres.update({ strands: 1, dust: Math.round(v['Dust Count']), atVertices: true });
+}
+
+setStyle([1, 2, 3, 4, 5].includes(params.Style) ? params.Style : 1);
 frame();
 
 // handy for testing in the browser console, e.g. lilyApp.params['Build Progress'] = 0.5

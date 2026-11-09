@@ -74,3 +74,8 @@
 
 #roots-page[hidden] { display: none; }
 #roots-page .view__canvas--growth { touch-action: none; cursor: crosshair; }
+
+/* [added] flowers: a 3D layer behind the roots; the roots are blended on top, with holes where flowers are */
+#roots-page .view--wide { position: relative; }
+#roots-page .view__canvas--growth { position: relative; z-index: 1; background: transparent; mix-blend-mode: screen; }
+#roots-page .view__canvas--flowers { z-index: 0; display: block; }

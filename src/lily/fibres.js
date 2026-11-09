@@ -108,18 +108,18 @@ const THREAD_FS = /* glsl */ `
   void main() { if (vAlpha < 0.002) discard; gl_FragColor = vec4(vec3(0.95, 0.93, 1.0) * vAlpha, vAlpha); }`;
 
 function seeded(seed) { let s = seed >>> 0 || 1; return () => ((s = Math.imul(s ^ (s >>> 15), 2246822519) + 0x9e3779b9 >>> 0) / 4294967296); }
-const glowMat = (vs, fs) => new THREE.ShaderMaterial({
-  uniforms: fibreUniforms, vertexShader: vs, fragmentShader: fs,
+const glowMat = (vs, fs, u = fibreUniforms) => new THREE.ShaderMaterial({
+  uniforms: u, vertexShader: vs, fragmentShader: fs,
   transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
 });
 
 export class Fibres extends THREE.Group {
-  constructor(lily, params) {
+  constructor(lily, params, u = fibreUniforms) {        // u: own uniforms (optional, page 4 flowers)
     super();
     this.lily = lily; this.params = params;
-    this.strandMat = glowMat(STRAND_VS, GLOW_FS);
-    this.dustMat = glowMat(DUST_VS, DUST_FS);
-    this.threadMat = glowMat(THREAD_VS, THREAD_FS);
+    this.strandMat = glowMat(STRAND_VS, GLOW_FS, u);
+    this.dustMat = glowMat(DUST_VS, DUST_FS, u);
+    this.threadMat = glowMat(THREAD_VS, THREAD_FS, u);
     this.key = ''; this.seenVersion = -1; this.colourKey = '';
   }
 
@@ -127,9 +127,10 @@ export class Fibres extends THREE.Group {
   // counts = how many strands / dust particles to sample (the most any breathing value needs)
   update(counts = { strands: this.params['Strand Count'], dust: this.params['Dust Count'] }) {
     this.counts = counts;
+    this.atVertices = Boolean(counts.atVertices);       // page 5: dust starts exactly at the vertices
     const g = this.lily.geometry; if (!g) return;
     const p = this.params;
-    const key = `${this.lily.layout}/${counts.strands}/${counts.dust}/${p['Thread Count']}/${p['Edge Fuzz']}`;
+    const key = `${this.lily.layout}/${this.atVertices}/${counts.strands}/${counts.dust}/${p['Thread Count']}/${p['Edge Fuzz']}`;
     if (key !== this.key) { this.key = key; this.#sample(); this.seenVersion = -1; this.colourKey = ''; }
     if (this.lily.version !== this.seenVersion) { this.seenVersion = this.lily.version; this.#follow(); }
     const ck = ['Blossom Hue', 'Blossom Saturation', 'Blossom Value', 'Dark Specks'].map((k) => p[k]).join('/');
@@ -160,6 +161,7 @@ export class Fibres extends THREE.Group {
       let lo = 0, hi = triCount - 1;
       while (lo < hi) { const mid = (lo + hi) >> 1; if (areas[mid] < r) lo = mid + 1; else hi = mid; }
       let b1 = rnd(), b2 = rnd(); if (b1 + b2 > 1) { b1 = 1 - b1; b2 = 1 - b2; }
+      if (this.atVertices) { b1 = 0; b2 = 0; }                           // a corner of the triangle = a vertex
       this.tri[i] = lo; this.bary[i * 2] = b1; this.bary[i * 2 + 1] = b2; this.side[i] = rnd() < 0.5 ? -1 : 1;
       const i0 = idx[lo * 3], i1 = idx[lo * 3 + 1], i2 = idx[lo * 3 + 2], b0 = 1 - b1 - b2;
       this.info.set([part[i0], u[i0] * b0 + u[i1] * b1 + u[i2] * b2, v[i0] * b0 + v[i1] * b1 + v[i2] * b2], i * 3);

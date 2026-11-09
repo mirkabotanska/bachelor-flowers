@@ -4,6 +4,7 @@
 //  - the camera starts when you first open the page and stops when you leave it
 //  - "Use mouse instead of camera": hold the mouse button on the growth view = the flashlight is on
 import './roots.css';
+import { RootFlowers } from './flowers.js';                     // [added] flowers + leaves on the roots
 
 const MARKUP = `<h1 class="lab__title">Roots – Growth test 03</h1>
     <video class="lab__video" muted playsinline hidden></video>
@@ -42,7 +43,7 @@ const MARKUP = `<h1 class="lab__title">Roots – Growth test 03</h1>
 
     <p class="status">Starting camera…</p>`;
 
-export function createRootsPage() {
+export function createRootsPage(mainParams = {}) {               // [changed] gets the flower/style 2 settings
   const page = document.createElement('div');
   page.id = 'roots-page';
   page.className = 'lab';
@@ -213,6 +214,20 @@ export function createRootsPage() {
   let spotCount = 0;
   let regrowCooldown = 0;                        // [added]
   let particles = [];                            // [added] dissolving roots
+  let flowers = null;                            // [added] 3D layer with flowers + leaves (made when the page opens)
+  let pendingLeaves = [];                        // [added] leaves appear a moment after roots are planted
+  const FLOWER_ON_CONNECT = 0.85;                // chance that flowers bloom where two roots connect
+  const FLOWERS_ON_CONNECT = [2, 4];             // ...a small group of this many smaller flowers
+  const FLOWERS_AT_BOOST = [1, 2];
+  const FLOWER_AT_BOOST = 2;                     // a spot boosted this many times gets a flower
+  const FLOWER_ROOT_EXTRA_SECONDS = 4;           // [added] roots that carry flowers wait this much longer before they dissolve
+  const flowerSpots = new Set();                 // [added] spots with flowers on them
+  const FLOWER_ON_HOLD = 0.2;                    // chance per regrow (holding still) of a flower at that spot
+  const LEAVES_PER_SPOT = [1, 3];
+  const LEAF_CHANCE = 0.65;                      // chance that a new spot gets leaves at all
+  const ROSETTE_CHANCE = 0.3;                    // ...a small leaf cluster instead of single leaves off a root
+  const LEAF_ON_ROUTE_CHANCE = 0.12;             // chance of a leaf at a fork when drawing a route slowly
+  const alive = (r) => roots.includes(r) && r.dissolving === undefined;
   let leader = null;                             // [added] the root that follows a moving light
   let prevLight = null, lightSpeed = 0, moveAngle = 0;
   let branchiness = 0.5;                         // [added] 1 = slow light (branch a lot), 0 = fast
@@ -469,10 +484,36 @@ export function createRootsPage() {
       roots.push(reacher);
     });
     if (!reused) flashes.push({ x: light.x, y: light.y, t: now });     // flash only for a new spot
+    if (!reused) pendingLeaves.push({ at: now + randomBetween(0.8, 1.6), spot });            // [added] leaves
+    else if (flowers && Math.random() < FLOWER_ON_HOLD && flowers.tryFlower(spot.x, spot.y, () => spotAlive(spot))) flowerSpots.add(spot.id);   // [added]
   }
 
   // [added] another press on an existing spot: its roots get longer, new branches sprout from inside them,
   // a few new roots come out of the centre, and the whole spot pulses with light
+  function spotAlive(spot) {                                          // [added]
+    return spots.includes(spot) && roots.some((r) => r.spot === spot.id && r.dissolving === undefined);
+  }
+
+  // [added] put 1-2 leaf clusters on the roots of a spot
+  function growLeaves() {
+    if (!flowers) return;
+    const due = pendingLeaves.filter((l) => now >= l.at);
+    pendingLeaves = pendingLeaves.filter((l) => now < l.at);
+    for (const { spot } of due) {
+      if (Math.random() > LEAF_CHANCE) continue;                       // not every spot gets leaves
+      const own = roots.filter((r) => r.spot === spot.id && alive(r) && r.points.length >= 6);
+      const n = Math.round(randomBetween(LEAVES_PER_SPOT[0], LEAVES_PER_SPOT[1]));
+      for (let k = 0; k < n && own.length; k++) {
+        const r = own[Math.floor(Math.random() * own.length)];
+        const index = Math.floor((r.points.length - 1) * randomBetween(0.4, 0.8));
+        const pt = r.points[index], next = r.points[Math.min(index + 1, r.points.length - 1)];
+        const dir = Math.random() < ROSETTE_CHANCE ? null                // leaves branch off the root, to one side
+          : getAngle(pt, next) + (Math.random() < 0.5 ? -1 : 1) * randomBetween(0.4, 1.0);
+        flowers.tryLeaves(pt.x, pt.y, () => alive(r) && (r.cut ?? 0) <= index, dir);
+      }
+    }
+  }
+
   function boostSpot(spot, light) {
     const decayed = Math.max(0, (spot.boost ?? 0) - (now - (spot.boostedAt ?? now)) / BOOST_DECAY_SECONDS);
     spot.boost = Math.min(decayed + 1, BOOST_MAX); spot.boostedAt = now;
@@ -499,11 +540,17 @@ export function createRootsPage() {
         { kind: "planted", burstSteps: steps, branchLength: steps, spot }));
     }
     flashes.push({ x: spot.x, y: spot.y, t: now, r: FLASH_RADIUS * (0.6 + 0.1 * b) });
+    if (flowers && b >= FLOWER_AT_BOOST) {                                // [added] flowers on a busy spot
+      const n = Math.round(randomBetween(FLOWERS_AT_BOOST[0], FLOWERS_AT_BOOST[1]));
+      const made = n > 1 ? flowers.tryFlowerGroup(spot.x, spot.y, () => spotAlive(spot), n) : flowers.tryFlower(spot.x, spot.y, () => spotAlive(spot));
+      if (made) flowerSpots.add(spot.id);                                // [added] its roots stay longer
+    }
   }
 
   function plantRoots(position) {
     const spot = addSpot(position);                                    // [added]
     spreadRoots(position, ROOTS_PER_SPOT, { kind: "planted", spot });
+    pendingLeaves.push({ at: now + randomBetween(0.8, 1.6), spot });   // [added]
     flashes.push({ x: position.x, y: position.y, t: now });   // [added]
   }
 
@@ -632,7 +679,13 @@ export function createRootsPage() {
   }
 
   function canShrink(root) {
-    return !root.isLit && root.unlitSeconds >= SHRINK_DELAY_SECONDS;
+    const carries = root.keep || flowerSpots.has(root.spot);   // [added] roots with flowers stay longer
+    return !root.isLit && root.unlitSeconds >= SHRINK_DELAY_SECONDS + (carries ? FLOWER_ROOT_EXTRA_SECONDS : 0);
+  }
+
+  // [added] a flower grows on this root: keep it (and the roots it branches from) a bit longer
+  function keepRoot(root) {
+    for (let r = root; r; r = r.parent) r.keep = true;
   }
 
   function shrinkRoot(root, deltaSeconds) {
@@ -850,6 +903,7 @@ export function createRootsPage() {
       lightSpeed += (v - lightSpeed) * Math.min(1, deltaSeconds * 10);
       if (getDistance(light, prevLight) > 0.5) moveAngle = getAngle(prevLight, light);
     } else lightSpeed = 0;
+    growLeaves();                                                      // [added]
     const newPress = Boolean(light) && !prevLight;                      // [added] light just switched on / mouse pressed
     prevLight = light ? { x: light.x, y: light.y } : null;
     const moving = Boolean(light) && lightSpeed > MOVE_SPEED;
@@ -887,6 +941,13 @@ export function createRootsPage() {
         if (root.targetRoot) root.targetRoot.charge = now;
         if (root.parent) root.parent.charge = now;
         flashes.push({ x: root.target.x, y: root.target.y, t: now, r: CONNECT_FLASH_RADIUS });
+        if (flowers && Math.random() < FLOWER_ON_CONNECT) {                 // [added] a flower where roots connect
+          const joined = root.targetRoot;
+          const n = Math.round(randomBetween(FLOWERS_ON_CONNECT[0], FLOWERS_ON_CONNECT[1]));
+          if (flowers.tryFlowerGroup(root.target.x, root.target.y, () => alive(root) && (!joined || roots.includes(joined)), n)) {
+            keepRoot(root); if (joined) keepRoot(joined);                 // [added] the roots under the flowers stay longer
+          }
+        }
         root.target = null; root.targetRoot = null;
       }
     }
@@ -894,6 +955,7 @@ export function createRootsPage() {
     roots = roots.filter((root) => !isGone(root));
     updateParticles(deltaSeconds);                                         // [added]
     spots = spots.filter((spot) => roots.some((root) => root.spot === spot.id));   // [added]
+    for (const id of flowerSpots) if (!spots.some((spot) => spot.id === id)) flowerSpots.delete(id);   // [added]
 
     // [added] moving: the main route grows along with the light (and nothing else gets in the way)
     if (moving) {
@@ -917,6 +979,10 @@ export function createRootsPage() {
               kind: "side", burstSteps: steps, branchLength: steps, parent: leader,
               attachIndex: leader.points.length - 1, opacity: 1,
             }));
+            if (flowers && Math.random() < LEAF_ON_ROUTE_CHANCE) {          // [added] now and then a leaf on the route
+              const at = leader.points.length - 1, tip = leader.points[at], lead = leader;
+              flowers.tryLeaves(tip.x, tip.y, () => alive(lead) && (lead.cut ?? 0) <= at, leader.angle + side * randomBetween(0.5, 1.1));
+            }
           }
           tipForkCooldown = TIP_FORK_EVERY_SLOW / Math.max(branchiness, 0.05) * randomBetween(0.7, 1.3);
         }
@@ -1074,6 +1140,21 @@ export function createRootsPage() {
     growthContext.clearRect(0, 0, growthCanvas.width, growthCanvas.height);
     drawGlow();
     drawRoots();
+    if (flowers) {                                                // [added] flowers in front of the roots
+      flowers.update(Math.min(deltaSeconds, 0.1), now);
+      growthContext.save();
+      growthContext.globalCompositeOperation = "destination-out";   // erase the roots where a flower is
+      for (const o of flowers.occluders()) {
+        const g = growthContext.createRadialGradient(o.x, o.y, 0, o.x, o.y, o.r);
+        g.addColorStop(0, `rgba(0, 0, 0, ${o.a})`);
+        g.addColorStop(0.7, `rgba(0, 0, 0, ${o.a})`);
+        g.addColorStop(1, "rgba(0, 0, 0, 0)");
+        growthContext.fillStyle = g;
+        growthContext.fillRect(o.x - o.r, o.y - o.r, o.r * 2, o.r * 2);
+      }
+      growthContext.restore();
+      flowers.render();
+    }
 
     rafId = requestAnimationFrame(render);                      // [changed] keep the id so the page can stop it
   }
@@ -1127,6 +1208,7 @@ export function createRootsPage() {
       if (running) return;
       page.hidden = false; running = true;
       if (cameraToggle.checked && !video.srcObject) startCamera();
+      flowers ??= new RootFlowers(growthCanvas.parentElement, growthCanvas, mainParams);   // [added]
       cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame((time) => { lastFrameTime = time; render(time); });
     },
