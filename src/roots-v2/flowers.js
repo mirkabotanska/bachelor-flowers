@@ -40,7 +40,8 @@ export const FLOWER_SETTINGS = {
   LEAF_GO_EARLY_LATE: [-0.35, 0.3], // [v2] s: each leaf goes a bit before or after the piece of root it sits on
   LEAF_EXIT_SECONDS: 2.2,
   LEAF_FALL_PX: 180,              // how far they fall
-  DUST_FLY: 0.7,                  // how far the loose dust flies (in flower sizes)
+  DUST_FLY: [0.7, 1.9],           // [v2] how far the loose dust flies (in flower sizes), random per flower: some crumble, some scatter far
+  DUST_SHARE: 0.55,               // [v2] share of the dust that breaks away when a flower falls apart (fewer particles)
   DUST_RISE_PX: 30,               // how far it drifts upwards (px), like the root particles
   POINT_PX: 2.2,                  // size of the vertex points (px)
   POINT_BRIGHTNESS: 1.4,
@@ -317,7 +318,8 @@ export class RootFlowers {
       fu.uOpacity.value = 0; fu.uStrandFraction.value = 0; fu.uDustFraction.value = 1; fu.uThreadOpacity.value = 0;
       fu.uDissolve.value = leafExit ? 0 : w;
       if (w > 0 && !leafExit) {                                           // loose dust flies off and drifts up the screen
-        it.dustFly ??= it.kind === 'leaf' ? rand(...S.LEAF_DUST_FLY) : S.DUST_FLY;
+        it.dustFly ??= it.kind === 'leaf' ? rand(...S.LEAF_DUST_FLY) : rand(...S.DUST_FLY);
+        fu.uDissolveShare.value = S.DUST_SHARE;
         fu.uDissolveDist.value = it.dustFly;
         const scale = it.outer.scale.x;
         fu.uRise.value = S.DUST_RISE_PX / scale;

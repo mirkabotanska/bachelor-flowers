@@ -31,6 +31,7 @@ export const fibreUniforms = {
   uDissolveDist: { value: 0.6 },  // how far the loose dust flies (flower units)
   uUp: { value: new THREE.Vector3(0, 1, 0) },   // 'up' on screen, in the flower's own space
   uRise: { value: 0.3 },          // how far the loose dust rises (flower units)
+  uDissolveShare: { value: 1 },   // share of the dust that breaks away (1 = all)
 };
 
 // rim = 1 where we look along the surface (silhouette), 0 where we look straight at it
@@ -71,7 +72,7 @@ const GLOW_FS = /* glsl */ `
 
 const DUST_VS = /* glsl */ `
   uniform float uTime, uReveal, uDustDist, uDustSpeed, uDustOpacity, uDustSize, uPixelRatio, uHalo, uDustFraction;
-  uniform float uDissolve, uDissolveDist, uRise; uniform vec3 uUp;
+  uniform float uDissolve, uDissolveDist, uRise, uDissolveShare; uniform vec3 uUp;
   attribute vec3 aBase; attribute vec3 aNormal; attribute vec3 aDir; attribute vec3 aColor;
   attribute vec4 aRand;          // x: speed, y: phase, z: growth, w: size
   varying vec3 vColor; varying float vAlpha;
@@ -96,6 +97,7 @@ const DUST_VS = /* glsl */ `
         p = aBase + dir * uDissolveDist * t * (0.3 + aRand.x) + uUp * uRise * t * t
           + vec3(sin(uTime * 2.0 + aRand.y * 20.0), cos(uTime * 1.7 + aRand.y * 13.0), sin(uTime * 1.3 + aRand.y * 7.0)) * 0.03 * t;
         vAlpha = uDustOpacity * 1.4 * grow * smoothstep(0.0, 0.1, t) * (1.0 - t);   // grow: only parts that were built
+        if (fract(aRand.y * 7.31) > uDissolveShare) vAlpha = 0.0;               // fewer grains when it falls apart
         sizeBoost = 1.3;
       } else {
         vAlpha *= 1.0 - smoothstep(0.0, 0.3, uDissolve);           // the normal dust calms down

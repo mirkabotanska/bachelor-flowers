@@ -1646,7 +1646,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
     STAY: [2.5, 10],             // s: how long each light stays
     MOVE_CHANCE: 0.4,            // share of lights that wander around
     TAP_CHANCE: 0.2,             // share that are switched on/off a few times on one spot
-    SPEED: [60, 450],            // px/s for the wandering ones (slow = many branches, fast = long clean route)
+    SPEED: [35, 170],            // [v2] 60-450 -> 35-170 px/s for the wandering ones (slow = many branches, fast = long clean route)
     MARGIN: 80,                  // px from the edges
   };
   let fakeLights = [];
@@ -1667,7 +1667,7 @@ export function createRootsPage(mainParams = {}) {               // [changed] ge
         id: `fake${fakeCount++}`, kind, start, end: start + randomBetween(FAKE.STAY[0], FAKE.STAY[1]),
         x: randomBetween(M, W - M), y: randomBetween(M, H - M),
         angle: Math.random() * Math.PI * 2, speed: randomBetween(FAKE.SPEED[0], FAKE.SPEED[1]),
-        turn: randomBetween(0.6, 2.2), phase: Math.random() * 10,
+        turn: randomBetween(0.4, 1.2), phase: Math.random() * 10,      // [v2] calmer curves (was 0.6-2.2)
         tapOn: randomBetween(0.4, 0.9), tapOff: randomBetween(0.25, 0.6),
       });
     }
