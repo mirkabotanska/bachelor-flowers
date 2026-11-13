@@ -4,9 +4,13 @@
 //     from its distance to the focus plane, so parts close to the "glass" stay sharp and parts further back
 //     go soft and pale (this is the depth-layers idea, done per pixel)
 //  3. grading on top: background, exposure, contrast, saturation, warmth, fade, split toning, glow
-//  4. breathing: the flower opens (breath in) and closes (breath out), with motion blur like a long exposure:
-//     every frame the flower is drawn several times along the last moment of its movement and those copies are
-//     blended together (newest strongest), so moving petals leave soft trails
+//  4. breathing: the flower opens (breath in) and closes (breath out), turns, sways on its stem, and every petal
+//     moves a bit on its own (tips lag behind when it turns, and flutter)
+//  5. long exposure: every frame the flower is drawn many times (at half size, cheap) along the last moment of its
+//     movement. The flower is only generated 3 times per frame (oldest, middle, now); the copies in between are
+//     smoothly interpolated in the shader, so many copies cost little. The copies make a soft, see-through trail;
+//     the flower of "now" is laid on top (like a flash at the end of a long exposure) so it still reads as a
+//     flower. An afterglow (feedback of the previous frames) makes the trails even longer and smoother.
 // Everything has a slider in the panel. Drag to turn the flower, scroll to zoom.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -14,6 +18,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import GUI from 'lil-gui';
 import { FLOWER_PARAMS, defaults } from '../lily/params.js';
 import { Lily } from '../lily/Lily.js';
+import { generateLily } from '../lily/generator.js';
 import { uniforms as sharedUniforms } from '../lily/materials.js';
 import './look.css';
 
@@ -42,6 +47,7 @@ const LOOK_DEFAULTS = {
   // flower extras
   'Show Stem + Leaves': true,
   'Petal Opacity': 1.0,
+  'Petal Edges': 0.8,         // deeper colour on the petal edges + faint veins
   // blur
   'Blur Amount': 0.75,
   'Base Blur': 0.08,
@@ -61,27 +67,106 @@ const LOOK_DEFAULTS = {
   'Shadow Tint Amount': 0.25,
   'Highlight Tint': '#f6d9c6',
   'Highlight Tint Amount': 0.2,
-  'Glow': 0.35,
+  'Glow': 0.2,
   // breathing
   'Breathing': true,
   'Breath In (s)': 3,
   'Breath Out (s)': 3,
-  'Breathing Amount': 0.25,
-  'Breath Turn': 18,          // degrees the flower turns with every breath (makes the trails sweep)
-  'Trail Length (s)': 1.0,
-  'Trail Copies': 12,
-  'Trail Fade': 0.6,
+  'Breathing Amount': 0.6,
+  'Breath Turn': 75,          // degrees the flower turns with every breath (makes the trails sweep)
+  'Sway': 12,                 // degrees the stem bends sideways with the breath
+  'Petal Lag': 2.0,           // petal tips lag behind when the flower turns (swirl)
+  'Petal Flutter': 0.12,      // every petal lifts and falls on its own rhythm
+  // long exposure
+  'Trail Length (s)': 1.5,
+  'Trail Copies': 24,
+  'Trail Fade': 0.35,
+  'Now Strength': 0.35,       // how solid the flower of "now" is on top of its trail
+  'Trail Softness': 0.15,     // how blurred the trail is (outside the flower of now)
+  'Afterglow': 0.88,          // feedback of earlier frames: longer, smoother trails
+  'Streaks': 2.0,             // smear the trail along the motion (flowing streaks)
+  'Motion v2': true,          // marks settings saved with this version of the motion (older ones are reset)
 };
+// motion settings that changed meaning with the long exposure (reset if saved by an older version)
+const MOTION_KEYS = ['Breathing Amount', 'Breath Turn', 'Trail Length (s)', 'Trail Copies', 'Trail Fade'];
 
 const QUAD_VERT = /* glsl */ `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
 
 // adds one copy of the flower into the long exposure
 const ADD_FRAG = /* glsl */ `uniform sampler2D tInput; uniform float uWeight; varying vec2 vUv; void main(){ gl_FragColor = texture2D(tInput, vUv) * uWeight; }`;
 
+// afterglow: this frame's trail mixed with what was there before (all premultiplied colour + alpha)
+const GLOW_FRAG = /* glsl */ `uniform sampler2D tInput, tPrev; uniform float uKeep; varying vec2 vUv;
+  void main(){ vec4 c = texture2D(tInput, vUv), p = texture2D(tPrev, vUv); gl_FragColor = c + (p - c) * uKeep * (1.0 - c.a * 0.5); }`;
+
+// the flower of now on top of its trail
+const COMBINE_FRAG = /* glsl */ `uniform sampler2D tTrail, tNow; uniform float uNow; varying vec2 vUv;
+  void main(){ vec4 n = texture2D(tNow, vUv) * uNow; gl_FragColor = n + texture2D(tTrail, vUv) * (1.0 - n.a); }`;
+
+// the movement of one vertex at one moment (page 7 only): smooth motion between the 3 generated poses,
+// petal flutter + lag (swirl), and the stem bending from its foot. Used by the petal material and the motion vectors.
+const MOTION_GLSL = /* glsl */ `
+  attribute vec3 aPosA; attribute vec3 aPosB;          // the flower a trail length ago, and half of it ago
+  uniform float uMFlutter, uMFoot;
+  vec3 lookMove(vec3 p0, vec3 n, float part, float pu, float seed, float s, float t, float twist, vec2 sway, out vec3 nOut) {
+    // s: 0 = oldest pose, 1 = now: curve through the 3 poses
+    vec3 p = aPosA * (2.0 * (s - 0.5) * (s - 1.0)) + aPosB * (-4.0 * s * (s - 1.0)) + p0 * (2.0 * s * (s - 0.5));
+    if (part < 0.5) {
+      float tip = pu * pu;
+      // every petal lifts and falls on its own rhythm (more at the tip)
+      p += n * tip * uMFlutter * (sin(t * 1.9 + seed * 5.31) + 0.5 * sin(t * 3.1 + seed * 11.7));
+      // tips lag behind when the flower turns: the petals swirl
+      float a = twist * pow(pu, 1.5), c = cos(a), sn = sin(a);
+      p.xz = mat2(c, -sn, sn, c) * p.xz; n.xz = mat2(c, -sn, sn, c) * n.xz;
+    }
+    // the stem bends from its foot: the higher, the more it leans
+    float h = clamp((p.y - uMFoot) / -uMFoot, 0.0, 1.4); h *= h;
+    vec2 ang = sway * h;
+    mat3 R = mat3(1.0, 0.0, 0.0, 0.0, cos(ang.y), sin(ang.y), 0.0, -sin(ang.y), cos(ang.y))
+           * mat3(cos(ang.x), sin(ang.x), 0.0, -sin(ang.x), cos(ang.x), 0.0, 0.0, 0.0, 1.0);
+    nOut = R * n;
+    return R * (p - vec3(0.0, uMFoot, 0.0)) + vec3(0.0, uMFoot, 0.0);
+  }`;
+const MOTION_VERT_COMMON = /* glsl */ `${MOTION_GLSL}
+  uniform float uMS, uMT, uMTwist; uniform vec2 uMSway;`;
+const MOTION_VERT_MAIN = /* glsl */ `
+  vec3 lkN; vec3 lkP = lookMove(position, objectNormal, aPart, aU, aSeed, uMS, uMT, uMTwist, uMSway, lkN);
+  objectNormal = lkN;`;
+
+// motion vectors: where every pixel of the flower of now moves on the screen (now vs a moment ago)
+const VEL_VERT = /* glsl */ `
+  attribute float aPart; attribute float aU; attribute float aSeed;
+  ${MOTION_GLSL}
+  uniform float uMT, uMTwist, uMS2, uMT2, uMTwist2; uniform vec2 uMSway, uMSway2; uniform mat4 uPrevModel;
+  varying vec3 vVel;
+  void main(){
+    vec3 n1, n2;
+    vec4 c1 = projectionMatrix * viewMatrix * modelMatrix * vec4(lookMove(position, normal, aPart, aU, aSeed, 1.0, uMT, uMTwist, uMSway, n1), 1.0);
+    vec4 c2 = projectionMatrix * viewMatrix * uPrevModel * vec4(lookMove(position, normal, aPart, aU, aSeed, uMS2, uMT2, uMTwist2, uMSway2, n2), 1.0);
+    vVel = vec3(c1.xy / c1.w - c2.xy / c2.w, 0.0) * 0.5;      // in uv units
+    gl_Position = c1;
+  }`;
+const VEL_FRAG = /* glsl */ `varying vec3 vVel; void main(){ gl_FragColor = vec4(vVel.xy, 1.0, 1.0); }`;
+
+// streaks: smear the trail along the motion of the nearby flower (like a long exposure)
+const STREAK_FRAG = /* glsl */ `
+  uniform sampler2D tInput, tVel; uniform float uLen; varying vec2 vUv;
+  void main(){
+    vec3 v = texture2D(tVel, vUv).rgb;                    // (motion * coverage, coverage), spread around the flower
+    vec2 d = v.b > 1e-3 ? v.rg / v.b * uLen * smoothstep(0.0, 0.15, v.b) : vec2(0.0);
+    vec4 s = vec4(0.0); float wsum = 0.0;
+    for (int i = 0; i < 16; i++) {
+      float f = float(i) / 15.0;
+      float w = 1.0 - 0.6 * f;                            // the newer end a bit stronger
+      s += texture2D(tInput, vUv + d * (f - 0.25)) * w; wsum += w;
+    }
+    gl_FragColor = s / wsum;
+  }`;
+
 // 1. circle of confusion: how blurred each pixel should be (0..1), from its depth
 const COC_FRAG = /* glsl */ `
   #include <packing>
-  uniform sampler2D tColor, tDepth; uniform float uNear, uFar, uFocus, uRange, uBase, uBehind;
+  uniform sampler2D tColor, tDepth, tNow; uniform float uNear, uFar, uFocus, uRange, uBase, uBehind, uTrailSoft;
   varying vec2 vUv;
   void main(){
     float a = texture2D(tColor, vUv).a;
@@ -89,6 +174,7 @@ const COC_FRAG = /* glsl */ `
     float off = d - uFocus;
     if (uBehind > 0.5) off = max(off, 0.0);
     float coc = clamp(uBase + abs(off) / uRange, 0.0, 1.0);
+    coc = mix(uTrailSoft, coc, texture2D(tNow, vUv).a);  // where only the trail is: its own softness
     gl_FragColor = vec4(coc * a, a, 0.0, 1.0);        // weighted by alpha, so the background can borrow it
   }`;
 
@@ -141,9 +227,13 @@ const FINAL_FRAG = /* glsl */ `
 
 export function createLookPage() {
   const params = { ...defaults(FLOWER_PARAMS), ...LOOK_DEFAULTS };
-  // softer starting point for this look: peach petals, fewer, a bit more open
-  Object.assign(params, { 'Blossom Hue': 0.03, 'Blossom Saturation': 0.4, 'Blossom Value': 0.95, 'Spot Amount': 0 });
-  try { Object.assign(params, JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')); } catch { /* no storage */ }
+  // starting point for this look: deep peach petals (a pale flower leaves invisible trails on the pale glass)
+  Object.assign(params, { 'Blossom Hue': 0.03, 'Blossom Saturation': 0.7, 'Blossom Value': 0.75, 'Spot Amount': 0 });
+  try {
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    if (!stored['Motion v2']) for (const k of MOTION_KEYS) delete stored[k];   // saved before the long exposure
+    Object.assign(params, stored, { 'Motion v2': true });
+  } catch { /* no storage */ }
   const save = () => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(params)); } catch { /* ignore */ } };
   const flowerDefaults = defaults(FLOWER_PARAMS);
 
@@ -178,13 +268,58 @@ export function createLookPage() {
   const u = {};
   for (const [k, v] of Object.entries(sharedUniforms)) u[k] = { value: v.value?.clone ? v.value.clone() : v.value };
   Object.assign(u, { uProgress: { value: 1 }, uSolidDelay: { value: 0 }, uFade: { value: 0.01 }, uSparkleAmount: { value: 0 }, uPetalGlow: { value: 0.04 } });
+  // motion values, changed for every copy of the long exposure
+  Object.assign(u, { uMS: { value: 1 }, uMT: { value: 0 }, uMTwist: { value: 0 }, uMFlutter: { value: 0 }, uMFoot: { value: -2.5 }, uMSway: { value: new THREE.Vector2() }, uEdges: { value: 0 } });
   const lilyParams = { ...params };
   const lily = new Lily(lilyParams, u);
   scene.add(lily);
+  // add the motion to this page's petal material (the shared material code stays untouched)
+  const baseCompile = lily.solidMat.onBeforeCompile;
+  lily.solidMat.onBeforeCompile = (shader, r) => {
+    baseCompile(shader, r);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>\n${MOTION_VERT_COMMON}`)
+      .replace('#include <defaultnormal_vertex>', `${MOTION_VERT_MAIN}\n#include <defaultnormal_vertex>`)
+      .replace('#include <project_vertex>', 'transformed = lkP;\n#include <project_vertex>');
+    // deeper colour on the petal edges + tip and faint veins (like the style images); moving edges draw the streaks
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float uEdges;')
+      .replace('#include <alphamap_fragment>', `#include <alphamap_fragment>
+        if (vPart < 0.5 && uEdges > 0.0) {
+          float edge = smoothstep(0.62, 1.0, abs(vV)) + smoothstep(0.82, 1.0, vU);
+          float vein = pow(abs(sin(vV * 7.0 * 3.14159)), 24.0) * smoothstep(0.05, 0.3, vU) * 0.5;
+          diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * diffuseColor.rgb * 0.55, clamp((edge + vein) * uEdges, 0.0, 1.0));
+        }`);
+  };
+  lily.solidMat.customProgramCacheKey = () => 'look-motion';
+  // motion vectors of the flower of now (shares the motion values with the petal material)
+  const velMat = new THREE.ShaderMaterial({ vertexShader: VEL_VERT, fragmentShader: VEL_FRAG, side: THREE.DoubleSide, uniforms: {
+    uMFlutter: u.uMFlutter, uMFoot: u.uMFoot, uMT: u.uMT, uMTwist: u.uMTwist, uMSway: u.uMSway,
+    uMS2: { value: 1 }, uMT2: { value: 0 }, uMTwist2: { value: 0 }, uMSway2: { value: new THREE.Vector2() }, uPrevModel: { value: new THREE.Matrix4() } } });
+
+  // the 3 poses of the flower (oldest, middle, now) for the long exposure; now = the normal positions
+  let poseGeo = null;
+  function setPoses(bloomA, bloomB, bloomNow) {
+    lily.setBloom(bloomNow);
+    const g = lily.geometry, n = g.attributes.position.array.length;
+    if (poseGeo !== g || g.attributes.aPosA?.array.length !== n) {
+      poseGeo = g;
+      g.setAttribute('aPosA', new THREE.BufferAttribute(new Float32Array(n), 3));
+      g.setAttribute('aPosB', new THREE.BufferAttribute(new Float32Array(n), 3));
+    }
+    for (const [name, b] of [['aPosA', bloomA], ['aPosB', bloomB]]) {
+      const a = g.attributes[name];
+      if (b === bloomNow) a.array.set(g.attributes.position.array);
+      else { const d = generateLily(lilyParams, b).position; if (d.length === n) a.array.set(d); else a.array.set(g.attributes.position.array); }
+      a.needsUpdate = true;
+    }
+  }
   function rebuildLily() {
     Object.assign(lilyParams, params);
     if (!params['Show Stem + Leaves']) { lilyParams['Stem Length'] = 0; lilyParams['Leaf Count'] = 0; }
     lily.rebuild();
+    poseGeo = null; setPoses(params['Flower Blooming'], params['Flower Blooming'], params['Flower Blooming']);
+    lily.geometry.computeBoundingBox(); u.uMFoot.value = Math.min(-0.5, lily.geometry.boundingBox.min.y);
     lily.points.visible = lily.wire.visible = false;
     if (lily.sparkles) lily.sparkles.visible = false;
     lily.solidMat.transparent = false;
@@ -198,12 +333,15 @@ export function createLookPage() {
     if (depth) { t.depthTexture = new THREE.DepthTexture(w, h); t.depthTexture.type = THREE.UnsignedIntType; }
     return t;
   };
-  let sceneRT, accumRT, cocRT, b1, b2, b3, tmp1, tmp2, tmp3, cocB, cocTmp;
+  let velRT, velB, velTmp, streakRT, sceneRT, subRT, trailRT, glowA, glowB, colorRT, cocRT, b1, b2, b3, tmp1, tmp2, tmp3, cocB, cocTmp;
   const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
   const quadScene = new THREE.Scene(); quadScene.add(quad);
   const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const cocMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: COC_FRAG,
-    uniforms: { tColor: { value: null }, tDepth: { value: null }, uNear: { value: 0.1 }, uFar: { value: 50 }, uFocus: { value: 6 }, uRange: { value: 1.5 }, uBase: { value: 0 }, uBehind: { value: 0 } } });
+    uniforms: { tColor: { value: null }, tDepth: { value: null }, tNow: { value: null }, uNear: { value: 0.1 }, uFar: { value: 50 }, uFocus: { value: 6 }, uRange: { value: 1.5 }, uBase: { value: 0 }, uBehind: { value: 0 }, uTrailSoft: { value: 0 } } });
+  const glowMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: GLOW_FRAG, uniforms: { tInput: { value: null }, tPrev: { value: null }, uKeep: { value: 0 } } });
+  const streakMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: STREAK_FRAG, uniforms: { tInput: { value: null }, tVel: { value: null }, uLen: { value: 1 } } });
+  const combineMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: COMBINE_FRAG, uniforms: { tTrail: { value: null }, tNow: { value: null }, uNow: { value: 1 } } });
   const addMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: ADD_FRAG, uniforms: { tInput: { value: null }, uWeight: { value: 1 } },
     blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor, depthTest: false, depthWrite: false, transparent: true });
   const blurMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: BLUR_FRAG, uniforms: { tInput: { value: null }, uDir: { value: new THREE.Vector2() } } });
@@ -220,14 +358,18 @@ export function createLookPage() {
     blurMat.uniforms.tInput.value = mid.texture; blurMat.uniforms.uDir.value.set(0, radius / dst.height); pass(blurMat, dst);
   }
 
-  let W = 1, H = 1, dirty = true;
+  let W = 1, H = 1, dirty = true, glowFresh = true, lastT = 0;
   function resize() {
     W = window.innerWidth; H = window.innerHeight;
     renderer.setSize(W, H, false);
     camera.aspect = W / H; camera.updateProjectionMatrix();
     const pr = renderer.getPixelRatio(), w = Math.round(W * pr), h = Math.round(H * pr);
-    for (const t of [sceneRT, accumRT, cocRT, b1, b2, b3, tmp1, tmp2, tmp3, cocB, cocTmp]) t?.dispose();
-    sceneRT = rt(w, h, true); accumRT = rt(w, h); cocRT = rt(w, h);
+    for (const t of [velRT, velB, velTmp, streakRT, sceneRT, subRT, trailRT, glowA, glowB, colorRT, cocRT, b1, b2, b3, tmp1, tmp2, tmp3, cocB, cocTmp]) t?.dispose();
+    sceneRT = rt(w, h, true); colorRT = rt(w, h); cocRT = rt(w, h);
+    subRT = rt(w >> 1, h >> 1, true); trailRT = rt(w >> 1, h >> 1);           // the trail copies: half size is plenty
+    glowA = rt(w >> 1, h >> 1); glowB = rt(w >> 1, h >> 1); glowFresh = true;
+    velRT = rt(w >> 1, h >> 1, true); streakRT = rt(w >> 1, h >> 1);
+    velB = rt(w >> 3, h >> 3); velTmp = rt(w >> 3, h >> 3);
     b1 = rt(w >> 1, h >> 1); tmp1 = rt(w >> 1, h >> 1);
     b2 = rt(w >> 2, h >> 2); tmp2 = rt(w >> 2, h >> 2);
     b3 = rt(w >> 3, h >> 3); tmp3 = rt(w >> 3, h >> 3);
@@ -237,28 +379,65 @@ export function createLookPage() {
   }
 
   function render(t = performance.now() / 1000) {
-    // 1. the flower (transparent background) + depth. While it breathes: a long exposure of several copies
-    let colorRT = sceneRT;
-    const moving = params['Breathing'] && params['Breathing Amount'] + params['Breath Turn'] > 0;
-    if (moving && params['Trail Length (s)'] > 0 && params['Trail Copies'] > 1) {
-      const n = Math.round(params['Trail Copies']), k = params['Trail Fade'] * 3;
+    // 1. the flower (transparent background) + depth. While it breathes: a long exposure of many copies
+    let colorTex = sceneRT.texture;
+    const moving = params['Breathing'];
+    const L = params['Trail Length (s)'], n = Math.round(params['Trail Copies']);
+    const dt = Math.min(Math.max(t - lastT, 0), 0.1); lastT = t;
+    if (moving && L > 0 && n > 1) {
+      setPoses(bloomAt(t - L), bloomAt(t - L / 2), bloomAt(t));
+      const k = params['Trail Fade'] * 3;
       let sum = 0; const w = [];
       for (let i = 0; i < n; i++) { w.push(Math.pow((i + 1) / n, k)); sum += w[i]; }
-      renderer.setRenderTarget(accumRT); renderer.clear();
-      for (let i = 0; i < n; i++) {                      // oldest first, the last one is "now" (its depth is used below)
-        poseAt(t - params['Trail Length (s)'] * (1 - i / (n - 1)));
-        renderer.setRenderTarget(sceneRT); renderer.clear(); renderer.render(scene, camera);
-        addMat.uniforms.tInput.value = sceneRT.texture; addMat.uniforms.uWeight.value = w[i] / sum;
-        quad.material = addMat; renderer.setRenderTarget(accumRT); renderer.render(quadScene, quadCam);
+      renderer.setRenderTarget(trailRT); renderer.clear();
+      for (let i = 0; i < n; i++) {                      // oldest first
+        const s = i / (n - 1);
+        motionAt(t - L * (1 - s), s);
+        renderer.setRenderTarget(subRT); renderer.clear(); renderer.render(scene, camera);
+        addMat.uniforms.tInput.value = subRT.texture; addMat.uniforms.uWeight.value = w[i] / sum;
+        pass(addMat, trailRT);
       }
-      colorRT = accumRT;
-    } else {
-      if (moving) poseAt(t);
+      let trailTex = trailRT.texture;
+      // streaks: motion vectors of the flower (now vs a moment ago), spread around it, then the trail is smeared along them
+      if (params['Streaks'] > 0) {
+        const dt2 = Math.min(L * 0.5, 0.6), m2 = motionVals(t - dt2);
+        const vu = velMat.uniforms;
+        vu.uMS2.value = 1 - dt2 / L; vu.uMT2.value = t - dt2; vu.uMTwist2.value = m2.twist; vu.uMSway2.value.copy(m2.sway);
+        vu.uPrevModel.value.makeRotationY(m2.turn);
+        motionAt(t, 1);
+        scene.overrideMaterial = velMat;
+        renderer.setRenderTarget(velRT); renderer.clear(); renderer.render(scene, camera);
+        scene.overrideMaterial = null;
+        blur(velRT, velTmp, velB, 3.0); blur(velB, velTmp, velB, 3.0);
+        streakMat.uniforms.tInput.value = trailTex; streakMat.uniforms.tVel.value = velB.texture;
+        streakMat.uniforms.uLen.value = params['Streaks'];
+        pass(streakMat, streakRT);
+        trailTex = streakRT.texture;
+      }
+      // afterglow: keep some of the earlier frames (the same amount per second, whatever the frame rate)
+      if (params['Afterglow'] > 0) {
+        glowMat.uniforms.tInput.value = trailTex; glowMat.uniforms.tPrev.value = glowA.texture;
+        glowMat.uniforms.uKeep.value = glowFresh ? 0 : Math.pow(params['Afterglow'], Math.max(dt, 1 / 60) * 60);
+        pass(glowMat, glowB); [glowA, glowB] = [glowB, glowA]; glowFresh = false;
+        trailTex = glowA.texture;
+      } else glowFresh = true;
+      // the flower of now, full size, on top
+      motionAt(t, 1);
       renderer.setRenderTarget(sceneRT); renderer.clear(); renderer.render(scene, camera);
+      combineMat.uniforms.tTrail.value = trailTex; combineMat.uniforms.tNow.value = sceneRT.texture;
+      combineMat.uniforms.uNow.value = params['Now Strength'];
+      pass(combineMat, colorRT);
+      colorTex = colorRT.texture;
+    } else {
+      if (moving) setPoses(bloomAt(t), bloomAt(t), bloomAt(t));
+      motionAt(moving ? t : t0, 1);
+      renderer.setRenderTarget(sceneRT); renderer.clear(); renderer.render(scene, camera);
+      glowFresh = true;
     }
     // 2. how blurred each pixel should be
     const camDist = camera.position.distanceTo(controls.target);
-    cocMat.uniforms.tColor.value = colorRT.texture; cocMat.uniforms.tDepth.value = sceneRT.depthTexture;
+    cocMat.uniforms.tColor.value = colorTex; cocMat.uniforms.tDepth.value = sceneRT.depthTexture; cocMat.uniforms.tNow.value = sceneRT.texture;
+    cocMat.uniforms.uTrailSoft.value = params['Trail Softness'];
     cocMat.uniforms.uNear.value = camera.near; cocMat.uniforms.uFar.value = camera.far;
     cocMat.uniforms.uFocus.value = camDist + params['Focus Distance'];
     cocMat.uniforms.uRange.value = params['Depth Range'];
@@ -267,12 +446,12 @@ export function createLookPage() {
     pass(cocMat, cocRT);
     blur(cocRT, cocTmp, cocB, 2.0);
     // 3. blur pyramid
-    blur(colorRT, tmp1, b1, 1.6);
+    blur({ texture: colorTex }, tmp1, b1, 1.6);
     blur(b1, tmp2, b2, 1.8);
     blur(b2, tmp3, b3, 2.2);
     // 4. final image
     const f = finalMat.uniforms;
-    f.tColor.value = colorRT.texture; f.tB1.value = b1.texture; f.tB2.value = b2.texture; f.tB3.value = b3.texture;
+    f.tColor.value = colorTex; f.tB1.value = b1.texture; f.tB2.value = b2.texture; f.tB3.value = b3.texture;
     f.tCoc.value = cocRT.texture; f.tCocBlur.value = cocB.texture;
     f.uAmount.value = params['Blur Amount']; f.uFrost.value = params['Frost (paleness)'];
     f.uExposure.value = params['Exposure']; f.uContrast.value = params['Contrast']; f.uSat.value = params['Saturation'];
@@ -302,6 +481,7 @@ export function createLookPage() {
   ff.add(params, 'Blossom Saturation', 0, 1, 0.01).name('Colour (saturation)').onChange(() => { save(); Object.assign(lilyParams, params); lily.updateColour(); dirty = true; });
   ff.add(params, 'Blossom Value', 0, 1, 0.01).name('Colour (brightness)').onChange(() => { save(); Object.assign(lilyParams, params); lily.updateColour(); dirty = true; });
   ff.add(params, 'Petal Opacity', 0.2, 1, 0.01).name('Petal opacity').onChange(onFlower);
+  ff.add(params, 'Petal Edges', 0, 1, 0.01).name('Petal edges + veins').onChange(onLook);
   ff.add(params, 'Show Stem + Leaves').name('Stem + leaves').onChange(onFlower);
 
   const fb = gui.addFolder('Blur (frosted glass)');
@@ -327,15 +507,22 @@ export function createLookPage() {
   fl.add(params, 'Glow', 0, 1.5, 0.01).onChange(onLook);
 
   const fbr = gui.addFolder('Breathing');
-  fbr.add(params, 'Breathing').name('Breathe (open + close)').onChange((v) => { save(); if (!v) { lily.setBloom(params['Flower Blooming']); lily.rotation.y = 0; } dirty = true; });
+  fbr.add(params, 'Breathing').name('Breathe (open + close)').onChange((v) => { save(); if (!v) rebuildLily(); dirty = true; });
   fbr.add(params, 'Breath In (s)', 1, 10, 0.1).name('Breath in (opens), s').onChange(onLook);
   fbr.add(params, 'Breath Out (s)', 1, 10, 0.1).name('Breath out (closes), s').onChange(onLook);
-  fbr.add(params, 'Breathing Amount', 0, 0.5, 0.01).name('How much it opens/closes').onChange(onLook);
-  fbr.add(params, 'Breath Turn', 0, 45, 0.5).name('Turn with the breath (°)').onChange(onLook);
-  const fm = gui.addFolder('Motion blur (trails)');
-  fm.add(params, 'Trail Length (s)', 0, 2, 0.01).name('Trail length (s, 0 = off)').onChange(onLook);
-  fm.add(params, 'Trail Copies', 2, 32, 1).name('Copies (smoother = slower)').onChange(onLook);
+  fbr.add(params, 'Breathing Amount', 0, 0.8, 0.01).name('How much it opens/closes').onChange(onLook);
+  fbr.add(params, 'Breath Turn', 0, 120, 0.5).name('Turn with the breath (°)').onChange(onLook);
+  fbr.add(params, 'Sway', 0, 25, 0.1).name('Sway on the stem (°)').onChange(onLook);
+  fbr.add(params, 'Petal Lag', 0, 3, 0.01).name('Petal tips lag (swirl)').onChange(onLook);
+  fbr.add(params, 'Petal Flutter', 0, 0.3, 0.001).name('Petals flutter').onChange(onLook);
+  const fm = gui.addFolder('Long exposure (motion trails)');
+  fm.add(params, 'Trail Length (s)', 0, 3, 0.01).name('Exposure time (s, 0 = off)').onChange(onLook);
+  fm.add(params, 'Trail Copies', 2, 48, 1).name('Copies (smoother = slower)').onChange(onLook);
   fm.add(params, 'Trail Fade', 0, 1, 0.01).name('Trail fade (0 = even)').onChange(onLook);
+  fm.add(params, 'Now Strength', 0, 1, 0.01).name('Flower of now (solid)').onChange(onLook);
+  fm.add(params, 'Trail Softness', 0, 1, 0.01).name('Trail softness').onChange(onLook);
+  fm.add(params, 'Streaks', 0, 3, 0.01).name('Streaks (smear along motion)').onChange(onLook);
+  fm.add(params, 'Afterglow', 0, 0.97, 0.01).name('Afterglow (longer trails)').onChange(onLook);
 
   const actions = {
     'Reset view': () => { resetView(); dirty = true; },
@@ -346,7 +533,7 @@ export function createLookPage() {
     },
     'Copy settings (JSON)': async () => { try { await navigator.clipboard.writeText(JSON.stringify(params, null, 2)); } catch { console.log(JSON.stringify(params, null, 2)); } },
     'Reset settings': () => {
-      Object.assign(params, flowerDefaults, LOOK_DEFAULTS, { 'Blossom Hue': 0.03, 'Blossom Saturation': 0.4, 'Blossom Value': 0.95, 'Spot Amount': 0 });
+      Object.assign(params, flowerDefaults, LOOK_DEFAULTS, { 'Blossom Hue': 0.03, 'Blossom Saturation': 0.7, 'Blossom Value': 0.75, 'Spot Amount': 0 });
       save(); gui.controllersRecursive().forEach((c) => c.updateDisplay()); rebuildLily();
     },
   };
@@ -361,10 +548,27 @@ export function createLookPage() {
     const ph = (((t - t0) % (tin + tout)) + (tin + tout)) % (tin + tout);
     return ph < tin ? 0.5 - 0.5 * Math.cos(Math.PI * ph / tin) : 0.5 + 0.5 * Math.cos(Math.PI * (ph - tin) / tout);
   }
-  function poseAt(t) {                                 // the flower at moment t: how open, how far turned
-    const open = openAt(t), amt = params['Breathing Amount'];
-    lily.setBloom(Math.min(1, Math.max(0, params['Flower Blooming'] - amt / 2 + amt * open)));
-    lily.rotation.y = THREE.MathUtils.degToRad(params['Breath Turn']) * (open - 0.5);
+  function bloomAt(t) {                                // how open the flower is at moment t
+    const amt = params['Breathing Amount'];
+    return Math.min(1, Math.max(0, params['Flower Blooming'] - amt / 2 + amt * openAt(t)));
+  }
+  const turnAt = (t) => THREE.MathUtils.degToRad(params['Breath Turn']) * (openAt(t) - 0.5);
+  const _sway = new THREE.Vector2();
+  function motionVals(t) {                             // the rest of the movement at moment t: turn, petal swirl, sway
+    const open = openAt(t), cycle = params['Breath In (s)'] + params['Breath Out (s)'];
+    const ph = ((t - t0) / cycle) * Math.PI * 2, sway = THREE.MathUtils.degToRad(params['Sway']);
+    return {
+      turn: turnAt(t),
+      twist: -(turnAt(t) - turnAt(t - 0.4)) * params['Petal Lag'],     // tips follow the turn a bit later
+      sway: _sway.set(sway * ((open - 0.5) * 1.4 + 0.3 * Math.sin(ph * 0.5 + 0.7)), sway * 0.6 * Math.sin(ph + 1.3)),
+    };
+  }
+  function motionAt(t, s) {                            // put the flower at moment t (s: 0 oldest pose .. 1 now)
+    const m = motionVals(t);
+    u.uMS.value = s; u.uMT.value = t; u.uMTwist.value = m.twist; u.uMSway.value.copy(m.sway);
+    u.uMFlutter.value = params['Petal Flutter'];
+    u.uEdges.value = params['Petal Edges'];
+    lily.rotation.y = m.turn;
   }
   function loop() {
     if (!running) return;
