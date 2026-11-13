@@ -84,7 +84,24 @@ function petalPoint(p, u, v, lenF, bloomF, bloom) {
   return [r + 0.02 - Math.cos(a) * n, Y, z + Math.sin(a) * n];
 }
 
-function petalRing(b, p, bloom, lenF, bloomF, rotExtra, head, seedBase) {
+// the petal rings: ring 0 is the outer one, every next ring is scaled, less open, turned and lifted
+// (with Ring Count 2 and the default opening/height this is exactly the old outer + inner ring)
+export function petalRings(p) {
+  const n = p['Petals Per Ring'], count = Math.max(1, Math.round(p['Ring Count'] ?? 2));
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    out.push({
+      i,
+      lenF: Math.pow(p['Inner Ring Scale'], i),
+      bloomF: Math.pow(p['Inner Ring Opening'] ?? 0.9, i),
+      rot: i * (Math.PI / n + p['Petal Ring Rotation Offset'] * Math.PI),
+      lift: i * (p['Inner Ring Height'] ?? 0),
+    });
+  }
+  return out;
+}
+
+function petalRing(b, p, bloom, lenF, bloomF, rotExtra, head, seedBase, lift = 0) {
   const nL = p['Petal Resolution Length'], nW = p['Petal Resolution Width'], n = p['Petals Per Ring'];
   for (let i = 0; i < n; i++) {
     const ang = (TAU / n) * i + rotExtra;
@@ -94,6 +111,7 @@ function petalRing(b, p, bloom, lenF, bloomF, rotExtra, head, seedBase) {
       for (let iy = 0; iy < nW; iy++) {
         const v = (iy / (nW - 1)) * 2 - 1;
         const local = rotZ(petalPoint(p, u, v, lenF, bloomF, bloom), ang);
+        local[2] += lift;
         b.vert(head(local), 0.40 + 0.60 * u, PART.PETAL, u, v, seedBase + i);
       }
     }
@@ -155,10 +173,9 @@ export function generateLily(p, bloom = p['Flower Blooming']) {
   const PL = Math.max(p['Petal Length'], 0.01);
   const headGrowth = (l) => 0.40 + 0.35 * clamp01(len(l) / PL);            // from the centre outwards
 
-  // petals: outer ring + smaller, rotated inner ring
+  // petals: outer ring + inner rings (each one smaller, less open, rotated, optionally higher)
   const n = p['Petals Per Ring'];
-  petalRing(b, p, bloom, 1.0, 1.0, 0.0, head, 0);
-  petalRing(b, p, bloom, p['Inner Ring Scale'], 0.9, Math.PI / n + p['Petal Ring Rotation Offset'] * Math.PI, head, n);
+  for (const r of petalRings(p)) petalRing(b, p, bloom, r.lenF, r.bloomF, r.rot, head, n * r.i, r.lift);
 
   // stamens (thin bent tubes with an anther on top), copied around the centre
   const segs = p['Round Segments'];

@@ -18,6 +18,9 @@ export const FLOWER_PARAMS = {
     'Petal Edge Ruffle': [0.25, 0.0, 1.0, 0.01],
     'Inner Ring Scale': [0.92, 0.5, 1.2, 0.01],
     'Petal Ring Rotation Offset': [0.0, -1.0, 1.0, 0.01],
+    'Ring Count': [2, 1, 6, 1],                 // like Blender: rings after the first are copies of the inner ring
+    'Inner Ring Opening': [0.9, 0.2, 1.2, 0.01],  // how open each next ring is (x per ring)
+    'Inner Ring Height': [0, -0.5, 0.5, 0.01],     // each next ring sits this much higher
   },
   Colour: {
     'Blossom Hue': [0.95, 0, 1, 0.005],

@@ -15,6 +15,7 @@ Switch with the buttons at the top (or keys **1**–**6**):
 5. **Roots**: roots grow from the flashlight (webcam) or the mouse, with leaves and flowers, breathing,
    and *Fake lights* for testing. Code: `src/roots/`.
 6. **Water**: soil, water appears where the light is, seeds sprout. Code: `src/water/`.
+7. **Lily look**: one lily that breathes (opens 3 s, closes 3 s, with long-exposure motion trails while it moves), with the frosted-glass look on top (blur by depth, colour grading). Turn it with the mouse, adjust everything in the panel, *Save image (PNG)*. Code: `src/look/`.
 
 ## Run it
 

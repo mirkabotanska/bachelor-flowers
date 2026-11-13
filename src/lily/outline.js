@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { TAU, petalPoint, rotX, rotY, rotZ, add, scl, rand, DEG } from './generator.js';
+import { TAU, petalPoint, petalRings, rotX, rotY, rotZ, add, scl, rand, DEG } from './generator.js';
 import { uniforms } from './materials.js';
 
 // Style 7: particles that trace the outlines of the flower - petal edges, stamens, stem and leaf edges.
@@ -26,16 +26,15 @@ function outlineCurves(p, bloom) {
   const n = p['Petals Per Ring'];
 
   // petal edges (left and right side of every petal, both rings)
-  const ring = (lenF, bloomF, rotExtra) => {
+  const ring = (lenF, bloomF, rotExtra, lift = 0) => {
     for (let i = 0; i < n; i++) {
       const ang = (TAU / n) * i + rotExtra;
       for (const v of [-1, 1]) {
-        curves.push({ kind: 0, at: (t) => head(rotZ(petalPoint(p, t, v, lenF, bloomF, bloom), ang)), growth: (t) => 0.40 + 0.60 * t });
+        curves.push({ kind: 0, at: (t) => { const q = rotZ(petalPoint(p, t, v, lenF, bloomF, bloom), ang); q[2] += lift; return head(q); }, growth: (t) => 0.40 + 0.60 * t });
       }
     }
   };
-  ring(1.0, 1.0, 0.0);
-  ring(p['Inner Ring Scale'], 0.9, Math.PI / n + p['Petal Ring Rotation Offset'] * Math.PI);
+  for (const r of petalRings(p)) ring(r.lenF, r.bloomF, r.rot, r.lift);
 
   // stamens + pistil (their centre lines, from the middle outwards)
   const PL = Math.max(p['Petal Length'], 0.01);
