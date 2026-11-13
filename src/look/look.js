@@ -11,6 +11,8 @@
 //     33 arc values (each one once, when first needed) and neighbouring ones are blended every frame, which is
 //     cheap. It also turns, sways on its stem, and every petal moves a bit on its own (tips lag behind when it
 //     turns, and flutter). Everything follows the rhythm of the breath, so every breath is the same smooth loop.
+//     The leaves breathe along: every generated flower also has its own leaf angle, fold and droop (closed values
+//     at the most closed moment of the breath, open values at the most open), so they move exactly like the petals.
 //  see-through petals: a see-through middle and a more solid edge, smoothly blended (real transparency, no dots)
 //  petal colours (like the style images: some petals pale, some deep, dark throats, light or dark rims): every
 //     petal mixes a light and a dark colour; how much of each depends on the petal (random), a gradient from the
@@ -98,6 +100,12 @@ const LOOK_DEFAULTS = {
   'Breath Out (s)': 3,
   'Open Most': 1.0,           // how open it gets on the breath in (1 = fully open, arc bend 1.66)
   'Closed Most': 0.0,         // how closed it gets on the breath out (0 = closed bud, arc bend -0.9)
+  // leaves breathing along (Leaf Angle: 0 = sticking out flat, 90 = along the stem; Leaf Fold: V-fold)
+  'Leaf Angle Closed': 68,    // closed flower: leaves close to the stem ...
+  'Leaf Angle Open': 38,      // ... open flower: leaves stand out
+  'Leaf Fold Closed': 1.0,    // closed flower: leaves folded in ...
+  'Leaf Fold Open': 0.6,      // ... open flower: leaves open
+  'Leaf Droop Breath': 0.3,   // how much less the leaf tips hang when the flower is closed
   'Breath Turn': 75,          // degrees the flower turns with every breath (makes the trails sweep)
   'Sway': 12,                 // degrees the stem bends sideways with the breath
   'Petal Lag': 2.0,           // petal tips lag behind when the flower turns (swirl)
@@ -369,8 +377,16 @@ export function createLookPage() {
   function arcTarget(i) {
     let a = arcCache.get(i);
     if (!a) {
-      const arc = ARC_CLOSED + (ARC_OPEN - ARC_CLOSED) * (i / (ARC_STEPS - 1));
-      a = generateLily({ ...lilyParams, 'Petal Arc Bend': arc }, lilyParams['Flower Blooming']).position;
+      const o = i / (ARC_STEPS - 1), arc = ARC_CLOSED + (ARC_OPEN - ARC_CLOSED) * o;
+      // the leaves at this opening: 0 at the most closed moment of the breath ... 1 at the most open
+      const span = params['Open Most'] - params['Closed Most'];
+      const lt = Math.abs(span) < 1e-4 ? 1 : Math.min(1, Math.max(0, (o - params['Closed Most']) / span));
+      a = generateLily({
+        ...lilyParams, 'Petal Arc Bend': arc,
+        'Leaf Angle': params['Leaf Angle Closed'] + (params['Leaf Angle Open'] - params['Leaf Angle Closed']) * lt,
+        'Leaf Fold': params['Leaf Fold Closed'] + (params['Leaf Fold Open'] - params['Leaf Fold Closed']) * lt,
+        'Leaf Droop': lilyParams['Leaf Droop'] - params['Leaf Droop Breath'] * (1 - lt),
+      }, lilyParams['Flower Blooming']).position;
       arcCache.set(i, a);
     }
     return a;
@@ -574,6 +590,8 @@ export function createLookPage() {
   gui.domElement.classList.add('look__gui');
   gui.hide();
   const onFlower = () => { save(); rebuildLily(); };
+  // these change the generated flowers of the breath (they are made again, one by one, when needed)
+  const onBreathShape = () => { save(); arcCache = new Map(); dirty = true; };
   const onLook = () => { save(); dirty = true; };
   const ff = gui.addFolder('Flower');
   for (const [k, label] of Object.entries(FLOWER_KEYS)) {
@@ -601,6 +619,18 @@ export function createLookPage() {
   ff.add(params, 'Petal Edge Opacity', 0, 1, 0.01).name('Petal edge opacity').onChange(onLook);
   ff.add(params, 'Petal Opacity Blend', 0.05, 1, 0.01).name('Middle → edge softness').onChange(onLook);
   ff.add(params, 'Show Stem + Leaves').name('Stem + leaves').onChange(onFlower);
+
+  const flv = gui.addFolder('Leaves');
+  const flowerRange = (k) => { for (const g of Object.values(FLOWER_PARAMS)) if (g[k]) return g[k].slice(1, 4); return [0, 1, 0.01]; };
+  flv.add(params, 'Leaf Angle', ...flowerRange('Leaf Angle')).name('Angle (still flower)').onChange(onFlower);
+  flv.add(params, 'Leaf Fold', ...flowerRange('Leaf Fold')).name('Fold (still flower)').onChange(onFlower);
+  flv.add(params, 'Leaf Droop', ...flowerRange('Leaf Droop')).name('Droop').onChange(onFlower);
+  flv.add(params, 'Leaf Twist', ...flowerRange('Leaf Twist')).name('Twist').onChange(onFlower);
+  flv.add(params, 'Leaf Angle Closed', 0, 150, 0.5).name('Breath: angle closed (°)').onChange(onBreathShape);
+  flv.add(params, 'Leaf Angle Open', 0, 150, 0.5).name('Breath: angle open (°)').onChange(onBreathShape);
+  flv.add(params, 'Leaf Fold Closed', -1, 1, 0.01).name('Breath: fold closed').onChange(onBreathShape);
+  flv.add(params, 'Leaf Fold Open', -1, 1, 0.01).name('Breath: fold open').onChange(onBreathShape);
+  flv.add(params, 'Leaf Droop Breath', 0, 1, 0.01).name('Breath: less droop closed').onChange(onBreathShape);
 
   const fc = gui.addFolder('Petal + stem colours');
   fc.addColor(params, 'Petal Light Colour').name('Light petal colour').onChange(onLook);
@@ -638,8 +668,8 @@ export function createLookPage() {
   fbr.add(params, 'Breathing').name('Breathe (open + close)').onChange((v) => { save(); if (!v) rebuildLily(); dirty = true; });
   fbr.add(params, 'Breath In (s)', 1, 10, 0.1).name('Breath in (opens), s').onChange(onLook);
   fbr.add(params, 'Breath Out (s)', 1, 10, 0.1).name('Breath out (closes), s').onChange(onLook);
-  fbr.add(params, 'Open Most', 0, 1, 0.01).name('Most open (1 = fully)').onChange(onLook);
-  fbr.add(params, 'Closed Most', 0, 1, 0.01).name('Most closed (0 = bud)').onChange(onLook);
+  fbr.add(params, 'Open Most', 0, 1, 0.01).name('Most open (1 = fully)').onChange(onBreathShape);
+  fbr.add(params, 'Closed Most', 0, 1, 0.01).name('Most closed (0 = bud)').onChange(onBreathShape);
   fbr.add(params, 'Breath Turn', 0, 120, 0.5).name('Turn with the breath (°)').onChange(onLook);
   fbr.add(params, 'Sway', 0, 25, 0.1).name('Sway on the stem (°)').onChange(onLook);
   fbr.add(params, 'Petal Lag', 0, 3, 0.01).name('Petal tips lag (swirl)').onChange(onLook);
