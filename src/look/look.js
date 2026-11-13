@@ -12,6 +12,9 @@
 //     cheap. It also turns, sways on its stem, and every petal moves a bit on its own (tips lag behind when it
 //     turns, and flutter). Everything follows the rhythm of the breath, so every breath is the same smooth loop.
 //  see-through petals: a see-through middle and a more solid edge, smoothly blended (real transparency, no dots)
+//  petal colours (like the style images: some petals pale, some deep, dark throats, light or dark rims): every
+//     petal mixes a light and a dark colour; how much of each depends on the petal (random), a gradient from the
+//     base to the tip and its edges (some petals darker, some lighter). Overlapping see-through petals add depth.
 //  5. long exposure: every frame the flower is drawn many times (at half size, cheap) along the last moment of its
 //     movement. The flower is only generated 3 times per frame (oldest, middle, now); the copies in between are
 //     smoothly interpolated in the shader, so many copies cost little. The copies make a soft, see-through trail;
@@ -24,7 +27,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import GUI from 'lil-gui';
 import { FLOWER_PARAMS, defaults } from '../lily/params.js';
 import { Lily } from '../lily/Lily.js';
-import { generateLily } from '../lily/generator.js';
+import { generateLily, hsv } from '../lily/generator.js';
 import { uniforms as sharedUniforms, createSolidMaterial } from '../lily/materials.js';
 import './look.css';
 
@@ -57,6 +60,15 @@ const LOOK_DEFAULTS = {
   'Show Stem + Leaves': true,
   'Petal Opacity': 1.0,
   'Petal Edges': 0.8,         // deeper colour on the petal edges + faint veins
+  // petal colours: every petal mixes these two (light <-> dark)
+  'Petal Light Colour': '#f7d3dd',
+  'Petal Dark Colour': '#8c2a4f',
+  'Petal Tone': 0.45,         // 0 = all light ... 1 = all dark (the middle of the mix)
+  'Petal Variation': 0.85,    // between petals: 0 = all the same ... 1 = very mixed
+  'Petal Gradient': 0.9,      // within a petal: darker at the base, lighter at the tip
+  'Petal Edge Variation': 0.6, // some petals with darker edges, some with lighter edges
+  'Stem Colour': '#619950',
+  'Leaf Colour': '#558e45',
   'Petal Centre Opacity': 0.5, // see-through middle of the petals ...
   'Petal Edge Opacity': 0.95,  // ... more solid towards the edges
   'Petal Opacity Blend': 0.6,  // how wide / soft the change from middle to edge is
@@ -290,7 +302,10 @@ export function createLookPage() {
   // motion values, changed for every copy of the long exposure
   Object.assign(u, { uMS: { value: 1 }, uMPh: { value: 0 }, uMTwist: { value: 0 }, uMFlutter: { value: 0 }, uMFoot: { value: -2.5 },
     uMSway: { value: new THREE.Vector2() }, uMAxis: { value: new THREE.Vector3(0, 1, 0) }, uEdges: { value: 0 },
-    uOpCentre: { value: 0.5 }, uOpEdge: { value: 1 }, uOpBlend: { value: 0.5 } });
+    uOpCentre: { value: 0.5 }, uOpEdge: { value: 1 }, uOpBlend: { value: 0.5 },
+    uPetalLight: { value: new THREE.Color() }, uPetalDark: { value: new THREE.Color() }, uTone: { value: 0.5 },
+    uVarPetal: { value: 0 }, uVarGrad: { value: 0 }, uVarEdge: { value: 0 },
+    uStemCol: { value: new THREE.Color() }, uLeafCol: { value: new THREE.Color() } });
   const lilyParams = { ...params };
   const lily = new Lily(lilyParams, u);
   scene.add(lily);
@@ -305,10 +320,25 @@ export function createLookPage() {
         .replace('#include <defaultnormal_vertex>', `${MOTION_VERT_MAIN}\n#include <defaultnormal_vertex>`)
         .replace('#include <project_vertex>', 'transformed = lkP;\n#include <project_vertex>');
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nuniform float uEdges, uOpCentre, uOpEdge, uOpBlend;')
+        .replace('#include <common>', `#include <common>
+          uniform float uEdges, uOpCentre, uOpEdge, uOpBlend, uTone, uVarPetal, uVarGrad, uVarEdge;
+          uniform vec3 uPetalLight, uPetalDark, uStemCol, uLeafCol;`)
         .replace('#include <alphamap_fragment>', `#include <alphamap_fragment>
           ${petals ? 'if (vPart > 0.5) discard;' : 'if (vPart < 0.5) discard;'}
+          if (vPart > 0.5 && vPart < 1.5) diffuseColor.rgb = uStemCol;          // stem (and the green base of the head)
+          if (vPart > 1.5 && vPart < 2.5) diffuseColor.rgb = uLeafCol;          // leaves
           if (vPart < 0.5) {
+            // petal colour: a mix of the light and dark colour (0 = light, 1 = dark), decided by
+            float r1 = fract(sin(vSeed * 12.9898 + 4.1) * 43758.5453);         // two random numbers per petal
+            float r2 = fract(sin(vSeed * 78.233 + 1.7) * 43758.5453);
+            float m = uTone + (r1 - 0.5) * 1.3 * uVarPetal;                      // the petal (some lighter, some darker)
+            m += uVarGrad * (0.5 - vU) * (0.8 + 0.5 * r2);                       // gradient: dark base, light tip
+            float rim = smoothstep(0.5, 1.0, max(abs(vV), smoothstep(0.7, 1.0, vU)));
+            m += uVarEdge * rim * (r2 > 0.5 ? 0.8 : -0.8);                       // edges: darker on some, lighter on others
+            // mixed as the eye sees it (not in linear light, where the middle looks almost as light as the light colour)
+            vec3 pc = mix(sqrt(uPetalLight), sqrt(uPetalDark), clamp(m, 0.0, 1.0)); pc *= pc;
+            // keep the shading of the shared petal material (green throat, midrib), but in these colours
+            diffuseColor.rgb = diffuseColor.rgb / max(uTint, vec3(1e-3)) * pc;
             // 0 on the middle of the petal, 1 on its edges and tip
             float e = 1.0 - (1.0 - abs(vV)) * (1.0 - pow(vU, 6.0));
             // see-through middle, more solid edge: one smooth change (no line)
@@ -446,7 +476,15 @@ export function createLookPage() {
     lily.mesh.visible = true; petalMat.colorWrite = true; petalMat.depthWrite = false;
   }
 
+  function setColours() {
+    u.uPetalLight.value.set(params['Petal Light Colour']); u.uPetalDark.value.set(params['Petal Dark Colour']);
+    u.uTone.value = params['Petal Tone']; u.uVarPetal.value = params['Petal Variation'];
+    u.uVarGrad.value = params['Petal Gradient']; u.uVarEdge.value = params['Petal Edge Variation'];
+    u.uStemCol.value.set(params['Stem Colour']); u.uLeafCol.value.set(params['Leaf Colour']);
+  }
+
   function render(t = performance.now() / 1000) {
+    setColours();
     // 1. the flower (transparent background) + depth. While it breathes: a long exposure of many copies
     let colorTex = sceneRT.texture;
     const moving = params['Breathing'];
@@ -545,15 +583,34 @@ export function createLookPage() {
     const [, min, max, step] = range;
     ff.add(params, k, min, max, step).name(label).onChange(onFlower);
   }
-  ff.add(params, 'Blossom Hue', 0, 1, 0.005).name('Colour (hue)').onChange(() => { save(); Object.assign(lilyParams, params); lily.updateColour(); dirty = true; });
-  ff.add(params, 'Blossom Saturation', 0, 1, 0.01).name('Colour (saturation)').onChange(() => { save(); Object.assign(lilyParams, params); lily.updateColour(); dirty = true; });
-  ff.add(params, 'Blossom Value', 0, 1, 0.01).name('Colour (brightness)').onChange(() => { save(); Object.assign(lilyParams, params); lily.updateColour(); dirty = true; });
+  // the colour sliders set both petal colours at once (a lighter and a darker version of that colour)
+  const linHex = (rgb) => `#${new THREE.Color().setRGB(...rgb, THREE.LinearSRGBColorSpace).getHexString()}`;
+  const onBlossom = () => {
+    const h = params['Blossom Hue'], sat = params['Blossom Saturation'], v = params['Blossom Value'];
+    params['Petal Light Colour'] = linHex(hsv(h, sat * 0.4, Math.min(1, v * 1.3)));
+    params['Petal Dark Colour'] = linHex(hsv(h + 0.01, Math.min(1, sat * 1.2), v * 0.4));
+    gui.controllersRecursive().forEach((c) => c.updateDisplay());
+    save(); Object.assign(lilyParams, params); lily.updateColour(); dirty = true;
+  };
+  ff.add(params, 'Blossom Hue', 0, 1, 0.005).name('Colour (hue)').onChange(onBlossom);
+  ff.add(params, 'Blossom Saturation', 0, 1, 0.01).name('Colour (saturation)').onChange(onBlossom);
+  ff.add(params, 'Blossom Value', 0, 1, 0.01).name('Colour (brightness)').onChange(onBlossom);
   ff.add(params, 'Petal Opacity', 0.2, 1, 0.01).name('Petal opacity').onChange(onFlower);
   ff.add(params, 'Petal Edges', 0, 1, 0.01).name('Petal edges + veins').onChange(onLook);
   ff.add(params, 'Petal Centre Opacity', 0, 1, 0.01).name('Petal middle opacity').onChange(onLook);
   ff.add(params, 'Petal Edge Opacity', 0, 1, 0.01).name('Petal edge opacity').onChange(onLook);
   ff.add(params, 'Petal Opacity Blend', 0.05, 1, 0.01).name('Middle → edge softness').onChange(onLook);
   ff.add(params, 'Show Stem + Leaves').name('Stem + leaves').onChange(onFlower);
+
+  const fc = gui.addFolder('Petal + stem colours');
+  fc.addColor(params, 'Petal Light Colour').name('Light petal colour').onChange(onLook);
+  fc.addColor(params, 'Petal Dark Colour').name('Dark petal colour').onChange(onLook);
+  fc.add(params, 'Petal Tone', 0, 1, 0.01).name('Light ↔ dark').onChange(onLook);
+  fc.add(params, 'Petal Variation', 0, 1, 0.01).name('Between petals (same → mixed)').onChange(onLook);
+  fc.add(params, 'Petal Gradient', 0, 1.5, 0.01).name('Gradient (dark base → light tip)').onChange(onLook);
+  fc.add(params, 'Petal Edge Variation', 0, 1, 0.01).name('Edges (some dark, some light)').onChange(onLook);
+  fc.addColor(params, 'Stem Colour').name('Stem colour').onChange(onLook);
+  fc.addColor(params, 'Leaf Colour').name('Leaf colour').onChange(onLook);
 
   const fb = gui.addFolder('Blur (frosted glass)');
   fb.add(params, 'Blur Amount', 0, 1.5, 0.01).name('Blur amount').onChange(onLook);
