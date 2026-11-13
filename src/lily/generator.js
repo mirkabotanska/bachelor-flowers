@@ -226,3 +226,6 @@ export function hsv(h, s, v) {
   const i = Math.floor(h * 6), f = h * 6 - i, p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
   return [[v, t, p], [q, v, p], [p, v, t], [p, q, v], [t, p, v], [v, p, q]][((i % 6) + 6) % 6];
 }
+
+// shared with the outline particles (outline.js): same maths, so the particles sit exactly on the flower
+export { TAU, DEG, petalPoint, rotX, rotY, rotZ, add, scl, len, rand, clamp01 };

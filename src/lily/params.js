@@ -172,6 +172,23 @@ export const TRACK_PARAMS = {
 
 // Settings taken out of the panel for now. They keep their default value and still work in the code,
 // so to bring one back, just remove it from this list.
+// Style 7: particles tracing the outlines of the flower
+export const OUTLINE_PARAMS = {
+  '7 · Outline particles': {
+    'Outline Lead': [0.3, 0, 0.6, 0.005],             // how far the solid flower follows behind the dots (higher = see the outline longer)
+    'Outline Particles': [5000, 500, 20000, 100],     // how many dots in total
+    'Outline Spread': [0.012, 0, 0.08, 0.001],        // how far they sit from the exact outline (low = tight line)
+    'Outline Dot Size (px)': [2.4, 0.5, 8, 0.1],
+    'Outline Brightness': [1.0, 0, 4, 0.05],
+    'Outline After Build': [0.25, 0, 1, 0.01],        // how much of the outline stays once the flower is built (0 = all gone)
+    'Outline Twinkle': [0.3, 0, 1, 0.01],
+    'Outline Drift': [0.3, 0, 1, 0.01],               // tiny movement of the dots
+    'Outline Colour': ['#e9bdd6'],                    // petals
+    'Stem Outline Colour': ['#a3c98f'],               // stem + leaves
+    'Stamen Outline Colour': ['#f4dce9'],
+  },
+};
+
 export const HIDDEN = [
   'Petal Ring Rotation Offset', 'Spot Amount', 'Spot Size',
   'Edge Fuzz', 'Dark Specks', 'Thread Count', 'Thread Opacity', 'Core Opacity',

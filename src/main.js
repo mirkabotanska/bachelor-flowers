@@ -7,11 +7,13 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import GUI from 'lil-gui';
 
-import { FLOWER_PARAMS, EFFECT_PARAMS, FIBRE_PARAMS, FIBRE_VERSION, BREATH_EXCLUDE, BREATH_CURVES, DEFAULT_BREATH_ANIMS, HIDDEN, TRACK_PARAMS, defaults } from './lily/params.js';
+import { FLOWER_PARAMS, EFFECT_PARAMS, FIBRE_PARAMS, FIBRE_VERSION, BREATH_EXCLUDE, BREATH_CURVES, DEFAULT_BREATH_ANIMS, HIDDEN, TRACK_PARAMS, defaults, OUTLINE_PARAMS } from './lily/params.js';
 import { Tracking } from './lily/tracking.js';
 import { createRootsPage } from './roots/growth.js';
 import { createRootsPage as createRootsPageV2 } from './roots-v2/growth.js';   // working copy of page 4
+import { createWaterPage } from './water/water.js';                         // page 8: soil, water, seeds
 import { Fibres, fibreUniforms } from './lily/fibres.js';
+import { OutlineParticles, outlineUniforms } from './lily/outline.js';
 import { Lily } from './lily/Lily.js';
 import { uniforms } from './lily/materials.js';
 import './style.css';
@@ -19,7 +21,7 @@ import './style.css';
 // ------------------------------------------------------------------ settings (saved in this browser)
 const STORAGE_KEY = 'flowers-web-settings-v1';
 const clone = (o) => JSON.parse(JSON.stringify(o));
-const DEFAULTS = { ...defaults(FLOWER_PARAMS), ...defaults(EFFECT_PARAMS), ...defaults(FIBRE_PARAMS), ...defaults(TRACK_PARAMS), 'Auto Play': true, Style: 1, 'Breath Reverse': false };
+const DEFAULTS = { ...defaults(FLOWER_PARAMS), ...defaults(EFFECT_PARAMS), ...defaults(FIBRE_PARAMS), ...defaults(TRACK_PARAMS), ...defaults(OUTLINE_PARAMS), 'Auto Play': true, Style: 1, 'Breath Reverse': false };
 const params = { ...DEFAULTS, _breathAnims: clone(DEFAULT_BREATH_ANIMS) };
 try { Object.assign(params, JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')); } catch { /* no storage */ }
 if (params._fibreVersion !== FIBRE_VERSION) {           // new style 2 defaults: replace old saved style 2 values only
@@ -67,10 +69,13 @@ const swayGroup = new THREE.Group();
 swayGroup.add(lily);
 const fibres = new Fibres(lily, params);          // style 2
 swayGroup.add(fibres);
+const outline = new OutlineParticles(params);      // style 7
+swayGroup.add(outline);
 scene.add(swayGroup);
 const tracking = new Tracking(lily, camera, renderer, params);   // style 3 (2D overlay)
 const rootsPage = createRootsPage(params);                           // page 4 (its own page, camera + roots)
 const rootsPageV2 = createRootsPageV2(params);                       // page 6: a copy of page 4 to try changes on
+const waterPage = createWaterPage();                                 // page 8: its own page
 
 // ------------------------------------------------------------------ glow
 const composer = new EffectComposer(renderer);
@@ -84,6 +89,7 @@ function resize() {
   camera.aspect = w / h; camera.updateProjectionMatrix();
   renderer.setSize(w, h); composer.setSize(w, h);
   uniforms.uPxScale.value = (h * renderer.getPixelRatio()) / (2 * Math.tan((camera.fov * Math.PI) / 360));
+  outlineUniforms.uPixelRatio.value = renderer.getPixelRatio();
 }
 window.addEventListener('resize', resize);
 resize();
@@ -103,6 +109,10 @@ function applyEffectParams() {
   bloomPass.threshold = params['Bloom Threshold'];
   renderer.toneMappingExposure = params['Exposure'];
   applyFibreParams(params);
+  const ou = outlineUniforms;                         // style 7
+  ou.uSpread.value = params['Outline Spread']; ou.uSize.value = params['Outline Dot Size (px)'];
+  ou.uBright.value = params['Outline Brightness']; ou.uAfter.value = params['Outline After Build'];
+  ou.uTwinkle.value = params['Outline Twinkle']; ou.uDrift.value = params['Outline Drift'];
 }
 // style 2 values (called every frame with the breathing values mixed in)
 function applyFibreParams(v) {
@@ -162,7 +172,7 @@ function addGroup(groups, onChange, closed = []) {
 }
 const flowerRebuild = (name) => {
   if (name.startsWith('Blossom') || name.startsWith('Spot')) lily.updateColour();
-  else lily.rebuild();
+  else { lily.rebuild(); outline.flowerChanged(); }
   info.vertices = String(lily.vertexCount);
 };
 addGroup(FLOWER_PARAMS, flowerRebuild, ['Petals', 'Colour', 'Stamen & Pistil', 'Stem', 'Leaves', 'Detail (low = faster)']);
@@ -209,6 +219,7 @@ function buildBreathUI() {
 }
 buildBreathUI();
 addGroup(TRACK_PARAMS, () => {}, ['3 · Extra effects']);
+addGroup(OUTLINE_PARAMS, () => applyEffectParams());
 gui.add(actions, 'Copy settings (JSON)');
 gui.add(actions, 'Reset everything');
 info.vertices = String(lily.vertexCount);
@@ -220,7 +231,7 @@ function alertSmall(text) {
 }
 window.addEventListener('keydown', (e) => {
   if (e.key === 'h') gui.show(gui._hidden);                     // H hides the panel
-  if (['1', '2', '3', '4', '5', '6'].includes(e.key)) setStyle(Number(e.key)); // 1–6 switch the style
+  if (['1', '2', '3', '4', '5', '6', '7', '8'].includes(e.key)) setStyle(Number(e.key)); // 1–8 switch the style
 });
 
 // ------------------------------------------------------------------ styles (buttons at the top)
@@ -228,19 +239,22 @@ const styleButtons = [...document.querySelectorAll('#styles button')];
 function setStyle(n) {
   params.Style = n; save();
   styleButtons.forEach((b) => b.classList.toggle('active', Number(b.dataset.style) === n));
-  folders['Build-up'].show(n === 1 || n === 5);
+  folders['Build-up'].show(n === 1 || n === 5 || n === 7);
+  folders['7 · Outline particles'].show(n === 7);
+  if (n === 7) folders['7 · Outline particles'].open();
   folders['2 · Fibres'].show(n === 2 || n === 5);
   folders['Breathing animation'].show(n === 2);
   folders['3 · Tracking'].show(n === 3); folders['3 · Extra effects'].show(n === 3);
   if (n === 3) folders['3 · Tracking'].open();
   if (n !== 3) tracking.clear();
   // pages 4 and 6 are separate pages: hide the 3D view and the panel, start the roots
-  const isRoots = n === 4 || n === 6;
+  const isRoots = n === 4 || n === 6 || n === 8;   // (8 = water page)
   renderer.domElement.style.display = isRoots ? 'none' : '';
   document.getElementById('hint').style.display = isRoots ? 'none' : '';
   isRoots ? gui.hide() : gui.show();
   n === 4 ? rootsPage.show() : rootsPage.hide();
   n === 6 ? rootsPageV2.show() : rootsPageV2.hide();
+  n === 8 ? waterPage.show() : waterPage.hide();
   if (isRoots) return;
   if (n === 2 || n === 5) folders['2 · Fibres'].open();
   params['Auto Play'] = true;
@@ -255,8 +269,10 @@ function frame() {
   uniforms.uTime.value = t;
 
   const dt = Math.min(t - (frame.last ?? t), 0.1); frame.last = t;
-  if (params.Style === 4 || params.Style === 6) { requestAnimationFrame(frame); return; }     // roots page runs its own loop
-  if (params.Style === 5) styleBuildDust(t);
+  if (params.Style === 4 || params.Style === 6 || params.Style === 8) { requestAnimationFrame(frame); return; }     // roots page runs its own loop
+  outline.visible = params.Style === 7;
+  if (params.Style === 7) styleOutline(t);
+  else if (params.Style === 5) styleBuildDust(t);
   else if (params.Style === 3) styleTracking(t, dt);
   else if (params.Style === 2) styleFibres(t);
   else styleBuildUp(t);
@@ -274,6 +290,7 @@ function frame() {
 
 // ---- style 1: points -> wireframe -> solid, then breathing (unchanged)
 function styleBuildUp(t) {
+  uniforms.uSolidDelay.value = params['Solid Delay'];      // (style 7 uses its own value)
   lily.points.visible = lily.wire.visible = lily.sparkles.visible = true;
   fibres.visible = false;
   swayGroup.scale.setScalar(1);
@@ -423,8 +440,22 @@ function styleBuildDust(t) {
   fibres.update({ strands: 1, dust: Math.round(v['Dust Count']), atVertices: true });
 }
 
-setStyle([1, 2, 3, 4, 5, 6].includes(params.Style) ? params.Style : 1);
+// ---- style 7: particles trace the outlines (stem first, then leaves, petals base -> tip), then the flower appears
+function styleOutline(t) {
+  styleBuildUp(t);                                   // same timeline and breathing as style 1
+  uniforms.uSolidDelay.value = params['Outline Lead'];
+  lily.points.visible = lily.wire.visible = lily.sparkles.visible = false;
+  fibres.visible = false;
+  let bloom = params['Flower Blooming'];             // the outline follows the petals while they breathe
+  if (params['Auto Play'] && breathStart !== null && params['Breathing Amount'] > 0) {
+    const bt = t - breathStart;
+    bloom += params['Breathing Amount'] * Math.min(bt / 2, 1) * Math.sin((bt / params['Breath Length (s)']) * Math.PI * 2);
+  }
+  outline.sync(Math.min(Math.max(bloom, 0), 1));
+}
+
+setStyle([1, 2, 3, 4, 5, 6, 7, 8].includes(params.Style) ? params.Style : 1);
 frame();
 
 // handy for testing in the browser console, e.g. lilyApp.params['Build Progress'] = 0.5
-window.lilyApp = { params, lily, fibres, fibreUniforms, tracking, replay, setStyle, buildBreathUI };
+window.lilyApp = { params, lily, fibres, fibreUniforms, outline, tracking, replay, setStyle, buildBreathUI };
