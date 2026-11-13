@@ -6,6 +6,8 @@
 //     from its distance to the focus plane, so parts close to the "glass" stay sharp and parts further back
 //     go soft and pale (this is the depth-layers idea, done per pixel)
 //  3. grading on top: background, exposure, contrast, saturation, warmth, fade, split toning, glow
+//     background shadow: the flower's own silhouette (with its trails), made tiny and blurred many times, laid on
+//     the background behind it as a faint haze (lighter or darker than the background), so it breathes along
 //  4. breathing: the flower opens (breath in) and closes (breath out) by animating Petal Arc Bend from -0.9
 //     (closed bud) to 1.66 (fully open), like the shape keys of the Blender export. The flower is generated at
 //     33 arc values (each one once, when first needed) and neighbouring ones are blended every frame, which is
@@ -94,6 +96,14 @@ const LOOK_DEFAULTS = {
   'Highlight Tint': '#f6d9c6',
   'Highlight Tint Amount': 0.2,
   'Glow': 0.2,
+  // background shadow / haze of the flower
+  'Bg Shadow': true,
+  'Bg Shadow Colour': '#453c36',  // lighter than a dark background = faint glow, darker than a light one = shadow
+  'Bg Shadow Blur': 0.75,
+  'Bg Shadow Opacity': 0.6,
+  'Bg Shadow Offset X': 0.04,     // in screen heights, + = right
+  'Bg Shadow Offset Y': -0.06,    // in screen heights, + = up
+  'Bg Shadow Size': 1.3,
   // breathing
   'Breathing': true,
   'Breath In (s)': 3,
@@ -230,6 +240,7 @@ const FINAL_FRAG = /* glsl */ `
   uniform sampler2D tColor, tB1, tB2, tB3, tCoc, tCocBlur;
   uniform vec2 uRes; uniform float uAmount, uFrost, uExposure, uContrast, uSat, uWarmth, uFade;
   uniform vec3 uBgTop, uBgBottom, uShadow, uHigh; uniform float uShadowAmt, uHighAmt, uGlow;
+  uniform sampler2D tBgShadow; uniform vec3 uBsCol; uniform float uBsOpacity, uBsSize, uAspect, uBsGain; uniform vec2 uBsAnchor, uBsOffset;
   varying vec2 vUv;
   vec4 level(float l){                                     // 0 = sharp ... 3 = most blurred
     vec4 c0 = texture2D(tColor, vUv), c1 = texture2D(tB1, vUv), c2 = texture2D(tB2, vUv), c3 = texture2D(tB3, vUv);
@@ -244,6 +255,15 @@ const FINAL_FRAG = /* glsl */ `
     float coc = own.g > 0.5 ? own.r / max(own.g, 1e-4) : near.r / max(near.g, 1e-4);
     vec4 c = level(coc * 3.0 * uAmount);                   // premultiplied colour + alpha
     vec3 bg = mix(uBgBottom, uBgTop, vUv.y);
+    // the flower's soft shadow / haze on the background: scaled around the flower, shifted, faded at the screen edges
+    float bsMask = 0.0;
+    if (uBsOpacity > 0.0) {
+      vec2 suv = uBsAnchor + (vUv - uBsAnchor - uBsOffset * vec2(1.0 / uAspect, 1.0)) / uBsSize;
+      float edge = smoothstep(0.0, 0.12, suv.x) * smoothstep(0.0, 0.12, 1.0 - suv.x) * smoothstep(0.0, 0.12, suv.y) * smoothstep(0.0, 0.12, 1.0 - suv.y);
+      float sh = (1.0 - exp(-texture2D(tBgShadow, suv).a * uBsGain)) * edge;   // soft knee: never a hard plateau
+      bg = mix(bg, uBsCol, sh * uBsOpacity);
+      bsMask = step(0.002, sh * uBsOpacity);
+    }
     // frosted glass: the further back, the paler (closer to the background colour)
     c.rgb = mix(c.rgb, bg * c.a, clamp(coc * uFrost, 0.0, 1.0));
     vec3 col = bg * (1.0 - c.a) + c.rgb;
@@ -258,6 +278,8 @@ const FINAL_FRAG = /* glsl */ `
     col = mix(col, uShadow, uShadowAmt * (1.0 - smoothstep(0.0, 0.6, lum)));
     col = mix(col, uHigh, uHighAmt * smoothstep(0.45, 1.0, lum));
     col = mix(vec3(uFade), vec3(1.0), col);                // lifted blacks, like old prints
+    // a tiny bit of noise where the haze is: a very dark, very soft gradient would show steps (rings) otherwise
+    col += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0 * bsMask;
     gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
   }`;
 
@@ -438,7 +460,7 @@ export function createLookPage() {
     if (depth) { t.depthTexture = new THREE.DepthTexture(w, h); t.depthTexture.type = THREE.UnsignedIntType; }
     return t;
   };
-  let velRT, velB, velTmp, streakRT, sceneRT, subRT, trailRT, glowA, glowB, colorRT, cocRT, b1, b2, b3, tmp1, tmp2, tmp3, cocB, cocTmp;
+  let velRT, velB, velTmp, streakRT, sceneRT, subRT, trailRT, glowA, glowB, colorRT, cocRT, b1, b2, b3, tmp1, tmp2, tmp3, cocB, cocTmp, bsA, bsB;
   const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
   const quadScene = new THREE.Scene(); quadScene.add(quad);
   const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -455,7 +477,8 @@ export function createLookPage() {
     uRes: { value: new THREE.Vector2() }, uAmount: { value: 1 }, uFrost: { value: 0 }, uExposure: { value: 1 }, uContrast: { value: 1 }, uSat: { value: 1 },
     uWarmth: { value: 0 }, uFade: { value: 0 }, uBgTop: { value: new THREE.Color() }, uBgBottom: { value: new THREE.Color() },
     uShadow: { value: new THREE.Color() }, uHigh: { value: new THREE.Color() }, uShadowAmt: { value: 0 }, uHighAmt: { value: 0 },
-    uGlow: { value: 0 } } });
+    uGlow: { value: 0 }, tBgShadow: { value: null }, uBsCol: { value: new THREE.Color() }, uBsOpacity: { value: 0 }, uBsGain: { value: 3 }, uBsSize: { value: 1 },
+    uAspect: { value: 1 }, uBsAnchor: { value: new THREE.Vector2(0.5, 0.5) }, uBsOffset: { value: new THREE.Vector2() } } });
 
   function pass(mat, target) { quad.material = mat; renderer.setRenderTarget(target); renderer.render(quadScene, quadCam); }
   function blur(src, mid, dst, radius) {
@@ -463,13 +486,14 @@ export function createLookPage() {
     blurMat.uniforms.tInput.value = mid.texture; blurMat.uniforms.uDir.value.set(0, radius / dst.height); pass(blurMat, dst);
   }
 
+  const _anchor = new THREE.Vector3();
   let W = 1, H = 1, dirty = true, glowFresh = true, lastT = 0;
   function resize() {
     W = window.innerWidth; H = window.innerHeight;
     renderer.setSize(W, H, false);
     camera.aspect = W / H; camera.updateProjectionMatrix();
     const pr = renderer.getPixelRatio(), w = Math.round(W * pr), h = Math.round(H * pr);
-    for (const t of [velRT, velB, velTmp, streakRT, sceneRT, subRT, trailRT, glowA, glowB, colorRT, cocRT, b1, b2, b3, tmp1, tmp2, tmp3, cocB, cocTmp]) t?.dispose();
+    for (const t of [velRT, velB, velTmp, streakRT, sceneRT, subRT, trailRT, glowA, glowB, colorRT, cocRT, b1, b2, b3, tmp1, tmp2, tmp3, cocB, cocTmp, bsA, bsB]) t?.dispose();
     sceneRT = rt(w, h, true); colorRT = rt(w, h); cocRT = rt(w, h);
     subRT = rt(w >> 1, h >> 1, true); trailRT = rt(w >> 1, h >> 1);           // the trail copies: half size is plenty
     glowA = rt(w >> 1, h >> 1); glowB = rt(w >> 1, h >> 1); glowFresh = true;
@@ -479,6 +503,7 @@ export function createLookPage() {
     b2 = rt(w >> 2, h >> 2); tmp2 = rt(w >> 2, h >> 2);
     b3 = rt(w >> 3, h >> 3); tmp3 = rt(w >> 3, h >> 3);
     cocB = rt(w >> 3, h >> 3); cocTmp = rt(w >> 3, h >> 3);
+    bsA = rt(Math.max(w >> 4, 8), Math.max(h >> 4, 8)); bsB = rt(Math.max(w >> 4, 8), Math.max(h >> 4, 8));   // background shadow: tiny
     finalMat.uniforms.uRes.value.set(w, h);
     dirty = true;
   }
@@ -571,6 +596,19 @@ export function createLookPage() {
     blur({ texture: colorTex }, tmp1, b1, 1.6);
     blur(b1, tmp2, b2, 1.8);
     blur(b2, tmp3, b3, 2.2);
+    // background shadow: the (already blurred) flower at 1/16 size, blurred again a few times
+    const bsOn = params['Bg Shadow'] && params['Bg Shadow Opacity'] > 0;
+    if (bsOn) {
+      const amt = params['Bg Shadow Blur'], r = 1 + amt * 5, passes = 1 + Math.round(amt * 6);   // all at 1/16 size: cheap
+      blur(b3, bsB, bsA, r);
+      for (let i = 0; i < passes; i++) blur(bsA, bsB, bsA, r);
+      // scaled around the middle of the flower (its bounding box, where it is on the screen now)
+      const bb = lily.geometry.boundingBox;
+      if (bb) {
+        _anchor.copy(bb.min).add(bb.max).multiplyScalar(0.5).applyMatrix4(lily.matrixWorld).project(camera);
+        finalMat.uniforms.uBsAnchor.value.set(_anchor.x * 0.5 + 0.5, _anchor.y * 0.5 + 0.5);
+      }
+    }
     // 4. final image
     const f = finalMat.uniforms;
     f.tColor.value = colorTex; f.tB1.value = b1.texture; f.tB2.value = b2.texture; f.tB3.value = b3.texture;
@@ -582,6 +620,11 @@ export function createLookPage() {
     f.uShadow.value.set(params['Shadow Tint']); f.uHigh.value.set(params['Highlight Tint']);
     f.uShadowAmt.value = params['Shadow Tint Amount']; f.uHighAmt.value = params['Highlight Tint Amount'];
     f.uGlow.value = params['Glow'];
+    f.tBgShadow.value = bsA.texture; f.uBsOpacity.value = bsOn ? params['Bg Shadow Opacity'] : 0;
+    // more blur spreads the flower thinner: make up for it, so blur only changes the softness
+    f.uBsGain.value = 3 * (1 + 3 * params['Bg Shadow Blur']);
+    f.uBsCol.value.set(params['Bg Shadow Colour']); f.uBsSize.value = params['Bg Shadow Size'];
+    f.uBsOffset.value.set(params['Bg Shadow Offset X'], params['Bg Shadow Offset Y']); f.uAspect.value = W / H;
     pass(finalMat, null);
   }
 
@@ -649,6 +692,15 @@ export function createLookPage() {
   fb.add(params, 'Depth Range', 0.2, 5, 0.01).name('Depth to full blur').onChange(onLook);
   fb.add(params, 'Only Behind Focus').name('Only blur behind').onChange(onLook);
   fb.add(params, 'Frost (paleness)', 0, 1, 0.01).name('Paler when blurred').onChange(onLook);
+
+  const fs = gui.addFolder('Background shadow');
+  fs.add(params, 'Bg Shadow').name('Shadow on/off').onChange(onLook);
+  fs.addColor(params, 'Bg Shadow Colour').name('Colour (lighter/darker than bg)').onChange(onLook);
+  fs.add(params, 'Bg Shadow Blur', 0, 1, 0.01).name('Blur').onChange(onLook);
+  fs.add(params, 'Bg Shadow Opacity', 0, 1, 0.01).name('Opacity').onChange(onLook);
+  fs.add(params, 'Bg Shadow Offset X', -0.5, 0.5, 0.005).name('Offset (- left, + right)').onChange(onLook);
+  fs.add(params, 'Bg Shadow Offset Y', -0.5, 0.5, 0.005).name('Offset (- down, + up)').onChange(onLook);
+  fs.add(params, 'Bg Shadow Size', 0.5, 3, 0.01).name('Size').onChange(onLook);
 
   const fl = gui.addFolder('Colour');
   fl.addColor(params, 'Background Top').name('Background top').onChange(onLook);
