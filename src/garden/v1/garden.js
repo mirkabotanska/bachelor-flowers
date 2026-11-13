@@ -18,13 +18,13 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import GUI from 'lil-gui';
-import { FLOWER_PARAMS, defaults } from '../lily/params.js';
-import { generateLily, hsv, rand } from '../lily/generator.js';
-import { uniforms as sharedUniforms, createSolidMaterial } from '../lily/materials.js';
+import { FLOWER_PARAMS, defaults } from '../../lily/params.js';
+import { generateLily, hsv, rand } from '../../lily/generator.js';
+import { uniforms as sharedUniforms, createSolidMaterial } from '../../lily/materials.js';
 import { createGrowth } from './growth.js';
 import { createLightInput } from './lights.js';
 import { RootTubes, Particles, waveZ, swayAngle, originPhase, WAVE_PERIOD, SWAY_PERIOD } from './tubes.js';
-import './garden.css';
+import '../garden.css';
 
 const STORAGE_KEY = 'flowers-web-garden-v1';
 const BLENDER_LILY_URL = `${import.meta.env.BASE_URL}lily/lily-breath.json`;
@@ -278,7 +278,7 @@ const clamp01 = (x) => Math.min(Math.max(x, 0), 1);
 const ease = (x) => { const c = clamp01(x); return c * c * (3 - 2 * c); };
 const rnd = (a, b) => a + Math.random() * (b - a);
 
-export function createGardenPage() {
+export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the version switch, name = window name for testing
   const flowerDefaults = { ...defaults(FLOWER_PARAMS), 'Spot Amount': 0, 'Petal Resolution Length': 17, 'Petal Resolution Width': 7 };
   const params = { ...flowerDefaults, ...GARDEN_DEFAULTS };
   let stored = {};
@@ -855,6 +855,7 @@ export function createGardenPage() {
   const gui = new GUI({ title: '8 · Garden' });
   gui.domElement.classList.add('garden__gui');
   gui.hide();
+  opts.panelTop?.(gui);
   const onLook = () => { save(); };
   const onFlower = () => { save(); kinds.clear(); for (const p of plants) p.attach(); };
   const onBreathShape = () => { save(); for (const k of kinds.values()) k.targets.clear(); };
@@ -1048,6 +1049,6 @@ export function createGardenPage() {
     },
   };
   // handy for testing in the browser console / Playwright
-  window.gardenApp = { params, growth, plants, lightInput, prof, startFake: (list) => growth.startFake(list), tryFlower, tryLeaf, step, get sim() { return { W: SIM_W, H: SIM_H, now: growth.now, lastNow }; } };
+  window[opts.name ?? 'gardenApp'] = { params, growth, plants, lightInput, prof, startFake: (list) => growth.startFake(list), tryFlower, tryLeaf, step, get sim() { return { W: SIM_W, H: SIM_H, now: growth.now, lastNow }; } };
   return api;
 }

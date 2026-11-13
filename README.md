@@ -48,7 +48,7 @@ Your settings are remembered in this browser. Press **H** to hide the panel.
 - `src/lily/fibres.js` – Flower2 (fibres and threads)
 - `src/lily/outline.js` – Flower4 (outline particles)
 - `src/roots/` – Roots page · `src/water/` – Water page · `src/look/` – Lily look page
-- `src/garden/` – Garden page (`growth.js` the roots simulation, `tubes.js` the 3D roots + particles, `lights.js` camera / mouse, `garden.js` the page)
+- `src/garden/` – Garden page, with a *Version* dropdown at the top of its panel: `v1/` = Version 1 (frozen, don't change), `v2/` = Version 2 (where changes are tried; smoother, more organic roots). Each has `growth.js` (roots simulation), `tubes.js` (3D roots + particles), `lights.js` (camera / mouse) and `garden.js` (the page); `garden.js` next to them switches between the versions.
 - `src/main.js` – scene, lights, camera, glow, animation timeline and the slider panel
 
 ## How it works (short)
