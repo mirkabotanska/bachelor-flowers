@@ -12,6 +12,7 @@ import { Tracking } from './lily/tracking.js';
 import { createRootsPage } from './roots/growth.js';                         // page 5: roots
 import { createWaterPage } from './water/water.js';                         // page 6: soil, water, seeds
 import { createLookPage } from './look/look.js';                            // page 7: still lily with the frosted look
+import { createGardenPage } from './garden/garden.js';                      // page 8: roots + lilies with the look
 import { Fibres, fibreUniforms } from './lily/fibres.js';
 import { OutlineParticles, outlineUniforms } from './lily/outline.js';
 import { Lily } from './lily/Lily.js';
@@ -79,6 +80,7 @@ const tracking = new Tracking(lily, camera, renderer, params);   // style 3 (2D 
 const rootsPage = createRootsPage(params);                           // page 5 (its own page, camera + roots)
 const waterPage = createWaterPage();                                 // page 6: its own page
 const lookPage = createLookPage();                                   // page 7: its own page
+const gardenPage = createGardenPage();                               // page 8: its own page
 
 // ------------------------------------------------------------------ glow
 const composer = new EffectComposer(renderer);
@@ -234,7 +236,7 @@ function alertSmall(text) {
 }
 window.addEventListener('keydown', (e) => {
   if (e.key === 'h') gui.show(gui._hidden);                     // H hides the panel
-  if (['1', '2', '3', '4', '5', '6', '7'].includes(e.key)) setStyle(Number(e.key)); // 1–7 switch the style
+  if (['1', '2', '3', '4', '5', '6', '7', '8'].includes(e.key)) setStyle(Number(e.key)); // 1–8 switch the style
 });
 
 // ------------------------------------------------------------------ styles (buttons at the top)
@@ -251,13 +253,14 @@ function setStyle(n) {
   if (n === 3) folders['3 · Tracking'].open();
   if (n !== 3) tracking.clear();
   // pages 5 (roots) and 6 (water) are separate pages: hide the 3D view and the panel
-  const isRoots = n === 5 || n === 6 || n === 7;
+  const isRoots = n === 5 || n === 6 || n === 7 || n === 8;
   renderer.domElement.style.display = isRoots ? 'none' : '';
   document.getElementById('hint').style.display = isRoots ? 'none' : '';
   isRoots ? gui.hide() : gui.show();
   n === 5 ? rootsPage.show() : rootsPage.hide();
   n === 6 ? waterPage.show() : waterPage.hide();
   n === 7 ? lookPage.show() : lookPage.hide();
+  n === 8 ? gardenPage.show() : gardenPage.hide();
   if (isRoots) return;
   if (n === 2) folders['2 · Fibres'].open();
   params['Auto Play'] = true;
@@ -272,7 +275,7 @@ function frame() {
   uniforms.uTime.value = t;
 
   const dt = Math.min(t - (frame.last ?? t), 0.1); frame.last = t;
-  if (params.Style === 5 || params.Style === 6 || params.Style === 7) { requestAnimationFrame(frame); return; }     // pages 5-7 run their own loop
+  if (params.Style >= 5 && params.Style <= 8) { requestAnimationFrame(frame); return; }     // pages 5-8 run their own loop
   outline.visible = params.Style === 4;
   if (params.Style === 4) styleOutline(t);
   else if (params.Style === 3) styleTracking(t, dt);
@@ -429,7 +432,7 @@ function styleOutline(t) {
   outline.sync(Math.min(Math.max(bloom, 0), 1));
 }
 
-setStyle([1, 2, 3, 4, 5, 6, 7].includes(params.Style) ? params.Style : 1);
+setStyle([1, 2, 3, 4, 5, 6, 7, 8].includes(params.Style) ? params.Style : 1);
 frame();
 
 // handy for testing in the browser console, e.g. lilyApp.params['Build Progress'] = 0.5
