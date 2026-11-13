@@ -1,11 +1,17 @@
-// Page 7 – Lily look. One lily, breathing, with the "frosted glass" look on top:
+// Page 7 – Lily look. One lily, breathing, with the "frosted glass" look on top.
+// The flower is the Blender lily: the web generator with the settings from public/lily/lily-breath.json
+// (loaded when the page starts; saved slider changes still win).
 //  1. the lily is rendered as usual, with its depth
 //  2. blur by depth: the image is blurred in 3 steps (a small "pyramid"); every pixel picks how blurred it is
 //     from its distance to the focus plane, so parts close to the "glass" stay sharp and parts further back
 //     go soft and pale (this is the depth-layers idea, done per pixel)
 //  3. grading on top: background, exposure, contrast, saturation, warmth, fade, split toning, glow
-//  4. breathing: the flower opens (breath in) and closes (breath out), turns, sways on its stem, and every petal
-//     moves a bit on its own (tips lag behind when it turns, and flutter)
+//  4. breathing: the flower opens (breath in) and closes (breath out) by animating Petal Arc Bend from -0.9
+//     (closed bud) to 1.66 (fully open), like the shape keys of the Blender export. The flower is generated at
+//     33 arc values (each one once, when first needed) and neighbouring ones are blended every frame, which is
+//     cheap. It also turns, sways on its stem, and every petal moves a bit on its own (tips lag behind when it
+//     turns, and flutter). Everything follows the rhythm of the breath, so every breath is the same smooth loop.
+//  see-through petals: a see-through middle and a more solid edge, smoothly blended (real transparency, no dots)
 //  5. long exposure: every frame the flower is drawn many times (at half size, cheap) along the last moment of its
 //     movement. The flower is only generated 3 times per frame (oldest, middle, now); the copies in between are
 //     smoothly interpolated in the shader, so many copies cost little. The copies make a soft, see-through trail;
@@ -19,10 +25,13 @@ import GUI from 'lil-gui';
 import { FLOWER_PARAMS, defaults } from '../lily/params.js';
 import { Lily } from '../lily/Lily.js';
 import { generateLily } from '../lily/generator.js';
-import { uniforms as sharedUniforms } from '../lily/materials.js';
+import { uniforms as sharedUniforms, createSolidMaterial } from '../lily/materials.js';
 import './look.css';
 
 const STORAGE_KEY = 'flowers-web-look-v1';
+const BLENDER_LILY_URL = `${import.meta.env.BASE_URL}lily/lily-breath.json`;   // the flower settings from Blender
+const ARC_CLOSED = -0.9, ARC_OPEN = 1.66;     // Petal Arc Bend of the closed bud ... the fully open flower
+const ARC_STEPS = 33;                          // flowers generated along that range (blended in between)
 
 // flower settings shown on this page (the rest keep their default)
 const FLOWER_KEYS = {
@@ -48,6 +57,9 @@ const LOOK_DEFAULTS = {
   'Show Stem + Leaves': true,
   'Petal Opacity': 1.0,
   'Petal Edges': 0.8,         // deeper colour on the petal edges + faint veins
+  'Petal Centre Opacity': 0.5, // see-through middle of the petals ...
+  'Petal Edge Opacity': 0.95,  // ... more solid towards the edges
+  'Petal Opacity Blend': 0.6,  // how wide / soft the change from middle to edge is
   // blur
   'Blur Amount': 0.75,
   'Base Blur': 0.08,
@@ -72,7 +84,8 @@ const LOOK_DEFAULTS = {
   'Breathing': true,
   'Breath In (s)': 3,
   'Breath Out (s)': 3,
-  'Breathing Amount': 0.6,
+  'Open Most': 1.0,           // how open it gets on the breath in (1 = fully open, arc bend 1.66)
+  'Closed Most': 0.0,         // how closed it gets on the breath out (0 = closed bud, arc bend -0.9)
   'Breath Turn': 75,          // degrees the flower turns with every breath (makes the trails sweep)
   'Sway': 12,                 // degrees the stem bends sideways with the breath
   'Petal Lag': 2.0,           // petal tips lag behind when the flower turns (swirl)
@@ -86,6 +99,7 @@ const LOOK_DEFAULTS = {
   'Afterglow': 0.88,          // feedback of earlier frames: longer, smoother trails
   'Streaks': 2.0,             // smear the trail along the motion (flowing streaks)
   'Motion v2': true,          // marks settings saved with this version of the motion (older ones are reset)
+  'Blender Lily': true,       // marks settings saved with the Blender flower (older flower settings are reset)
 };
 // motion settings that changed meaning with the long exposure (reset if saved by an older version)
 const MOTION_KEYS = ['Breathing Amount', 'Breath Turn', 'Trail Length (s)', 'Trail Copies', 'Trail Fade'];
@@ -107,17 +121,19 @@ const COMBINE_FRAG = /* glsl */ `uniform sampler2D tTrail, tNow; uniform float u
 // petal flutter + lag (swirl), and the stem bending from its foot. Used by the petal material and the motion vectors.
 const MOTION_GLSL = /* glsl */ `
   attribute vec3 aPosA; attribute vec3 aPosB;          // the flower a trail length ago, and half of it ago
-  uniform float uMFlutter, uMFoot;
-  vec3 lookMove(vec3 p0, vec3 n, float part, float pu, float seed, float s, float t, float twist, vec2 sway, out vec3 nOut) {
+  uniform float uMFlutter, uMFoot; uniform vec3 uMAxis;   // uMAxis: the direction the flower head looks (from its centre)
+  vec3 lkRot(vec3 v, vec3 k, float a) { return v * cos(a) + cross(k, v) * sin(a) + k * dot(k, v) * (1.0 - cos(a)); }
+  // ph: where in the breath we are (0..2pi)
+  vec3 lookMove(vec3 p0, vec3 n, float part, float pu, float seed, float s, float ph, float twist, vec2 sway, out vec3 nOut) {
     // s: 0 = oldest pose, 1 = now: curve through the 3 poses
     vec3 p = aPosA * (2.0 * (s - 0.5) * (s - 1.0)) + aPosB * (-4.0 * s * (s - 1.0)) + p0 * (2.0 * s * (s - 0.5));
     if (part < 0.5) {
       float tip = pu * pu;
-      // every petal lifts and falls on its own rhythm (more at the tip)
-      p += n * tip * uMFlutter * (sin(t * 1.9 + seed * 5.31) + 0.5 * sin(t * 3.1 + seed * 11.7));
-      // tips lag behind when the flower turns: the petals swirl
-      float a = twist * pow(pu, 1.5), c = cos(a), sn = sin(a);
-      p.xz = mat2(c, -sn, sn, c) * p.xz; n.xz = mat2(c, -sn, sn, c) * n.xz;
+      // every petal lifts and falls on its own (but always to the rhythm of the breath, so every breath is the same)
+      p += n * tip * uMFlutter * (sin(ph + seed * 5.31) + 0.5 * sin(2.0 * ph + seed * 11.7));
+      // tips lag behind when the flower turns: the petals swirl around the head
+      float a = twist * pow(pu, 1.5);
+      p = lkRot(p, uMAxis, a); n = lkRot(n, uMAxis, a);
     }
     // the stem bends from its foot: the higher, the more it leans
     float h = clamp((p.y - uMFoot) / -uMFoot, 0.0, 1.4); h *= h;
@@ -128,21 +144,21 @@ const MOTION_GLSL = /* glsl */ `
     return R * (p - vec3(0.0, uMFoot, 0.0)) + vec3(0.0, uMFoot, 0.0);
   }`;
 const MOTION_VERT_COMMON = /* glsl */ `${MOTION_GLSL}
-  uniform float uMS, uMT, uMTwist; uniform vec2 uMSway;`;
+  uniform float uMS, uMPh, uMTwist; uniform vec2 uMSway;`;
 const MOTION_VERT_MAIN = /* glsl */ `
-  vec3 lkN; vec3 lkP = lookMove(position, objectNormal, aPart, aU, aSeed, uMS, uMT, uMTwist, uMSway, lkN);
+  vec3 lkN; vec3 lkP = lookMove(position, objectNormal, aPart, aU, aSeed, uMS, uMPh, uMTwist, uMSway, lkN);
   objectNormal = lkN;`;
 
 // motion vectors: where every pixel of the flower of now moves on the screen (now vs a moment ago)
 const VEL_VERT = /* glsl */ `
   attribute float aPart; attribute float aU; attribute float aSeed;
   ${MOTION_GLSL}
-  uniform float uMT, uMTwist, uMS2, uMT2, uMTwist2; uniform vec2 uMSway, uMSway2; uniform mat4 uPrevModel;
+  uniform float uMPh, uMTwist, uMS2, uMPh2, uMTwist2; uniform vec2 uMSway, uMSway2; uniform mat4 uPrevModel;
   varying vec3 vVel;
   void main(){
     vec3 n1, n2;
-    vec4 c1 = projectionMatrix * viewMatrix * modelMatrix * vec4(lookMove(position, normal, aPart, aU, aSeed, 1.0, uMT, uMTwist, uMSway, n1), 1.0);
-    vec4 c2 = projectionMatrix * viewMatrix * uPrevModel * vec4(lookMove(position, normal, aPart, aU, aSeed, uMS2, uMT2, uMTwist2, uMSway2, n2), 1.0);
+    vec4 c1 = projectionMatrix * viewMatrix * modelMatrix * vec4(lookMove(position, normal, aPart, aU, aSeed, 1.0, uMPh, uMTwist, uMSway, n1), 1.0);
+    vec4 c2 = projectionMatrix * viewMatrix * uPrevModel * vec4(lookMove(position, normal, aPart, aU, aSeed, uMS2, uMPh2, uMTwist2, uMSway2, n2), 1.0);
     vVel = vec3(c1.xy / c1.w - c2.xy / c2.w, 0.0) * 0.5;      // in uv units
     gl_Position = c1;
   }`;
@@ -226,16 +242,19 @@ const FINAL_FRAG = /* glsl */ `
   }`;
 
 export function createLookPage() {
-  const params = { ...defaults(FLOWER_PARAMS), ...LOOK_DEFAULTS };
-  // starting point for this look: deep peach petals (a pale flower leaves invisible trails on the pale glass)
-  Object.assign(params, { 'Blossom Hue': 0.03, 'Blossom Saturation': 0.7, 'Blossom Value': 0.75, 'Spot Amount': 0 });
+  // flower defaults: the web generator's, replaced by the Blender flower as soon as its settings are loaded
+  const flowerDefaults = { ...defaults(FLOWER_PARAMS), 'Spot Amount': 0 };
+  const params = { ...flowerDefaults, ...LOOK_DEFAULTS };
+  let stored = {};
   try {
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
     if (!stored['Motion v2']) for (const k of MOTION_KEYS) delete stored[k];   // saved before the long exposure
-    Object.assign(params, stored, { 'Motion v2': true });
+    if (!stored['Blender Lily']) {                                              // saved before the Blender flower
+      for (const k of [...Object.keys(flowerDefaults), 'Open Most', 'Closed Most']) delete stored[k];
+    }
+    Object.assign(params, stored, { 'Motion v2': true, 'Blender Lily': true });
   } catch { /* no storage */ }
   const save = () => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(params)); } catch { /* ignore */ } };
-  const flowerDefaults = defaults(FLOWER_PARAMS);
 
   const page = document.createElement('div');
   page.id = 'look-page';
@@ -269,61 +288,101 @@ export function createLookPage() {
   for (const [k, v] of Object.entries(sharedUniforms)) u[k] = { value: v.value?.clone ? v.value.clone() : v.value };
   Object.assign(u, { uProgress: { value: 1 }, uSolidDelay: { value: 0 }, uFade: { value: 0.01 }, uSparkleAmount: { value: 0 }, uPetalGlow: { value: 0.04 } });
   // motion values, changed for every copy of the long exposure
-  Object.assign(u, { uMS: { value: 1 }, uMT: { value: 0 }, uMTwist: { value: 0 }, uMFlutter: { value: 0 }, uMFoot: { value: -2.5 }, uMSway: { value: new THREE.Vector2() }, uEdges: { value: 0 } });
+  Object.assign(u, { uMS: { value: 1 }, uMPh: { value: 0 }, uMTwist: { value: 0 }, uMFlutter: { value: 0 }, uMFoot: { value: -2.5 },
+    uMSway: { value: new THREE.Vector2() }, uMAxis: { value: new THREE.Vector3(0, 1, 0) }, uEdges: { value: 0 },
+    uOpCentre: { value: 0.5 }, uOpEdge: { value: 1 }, uOpBlend: { value: 0.5 } });
   const lilyParams = { ...params };
   const lily = new Lily(lilyParams, u);
   scene.add(lily);
-  // add the motion to this page's petal material (the shared material code stays untouched)
-  const baseCompile = lily.solidMat.onBeforeCompile;
-  lily.solidMat.onBeforeCompile = (shader, r) => {
-    baseCompile(shader, r);
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', `#include <common>\n${MOTION_VERT_COMMON}`)
-      .replace('#include <defaultnormal_vertex>', `${MOTION_VERT_MAIN}\n#include <defaultnormal_vertex>`)
-      .replace('#include <project_vertex>', 'transformed = lkP;\n#include <project_vertex>');
-    // deeper colour on the petal edges + tip and faint veins (like the style images); moving edges draw the streaks
-    shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform float uEdges;')
-      .replace('#include <alphamap_fragment>', `#include <alphamap_fragment>
-        if (vPart < 0.5 && uEdges > 0.0) {
-          float edge = smoothstep(0.62, 1.0, abs(vV)) + smoothstep(0.82, 1.0, vU);
-          float vein = pow(abs(sin(vV * 7.0 * 3.14159)), 24.0) * smoothstep(0.05, 0.3, vU) * 0.5;
-          diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * diffuseColor.rgb * 0.55, clamp((edge + vein) * uEdges, 0.0, 1.0));
-        }`);
-  };
-  lily.solidMat.customProgramCacheKey = () => 'look-motion';
+  // add the motion to this page's materials (the shared material code stays untouched). The lily's own material
+  // draws everything except the petals (solid); a second material draws only the petals, really see-through.
+  function addLook(mat, petals) {
+    const baseCompile = mat.onBeforeCompile;
+    mat.onBeforeCompile = (shader, r) => {
+      baseCompile(shader, r);
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>\n${MOTION_VERT_COMMON}`)
+        .replace('#include <defaultnormal_vertex>', `${MOTION_VERT_MAIN}\n#include <defaultnormal_vertex>`)
+        .replace('#include <project_vertex>', 'transformed = lkP;\n#include <project_vertex>');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nuniform float uEdges, uOpCentre, uOpEdge, uOpBlend;')
+        .replace('#include <alphamap_fragment>', `#include <alphamap_fragment>
+          ${petals ? 'if (vPart > 0.5) discard;' : 'if (vPart < 0.5) discard;'}
+          if (vPart < 0.5) {
+            // 0 on the middle of the petal, 1 on its edges and tip
+            float e = 1.0 - (1.0 - abs(vV)) * (1.0 - pow(vU, 6.0));
+            // see-through middle, more solid edge: one smooth change (no line)
+            diffuseColor.a *= mix(uOpCentre, uOpEdge, smoothstep(1.0 - uOpBlend, 1.0, e));
+            // deeper colour on the edges + tip and faint veins (like the style images); moving edges draw the streaks
+            float edge = smoothstep(0.62, 1.0, abs(vV)) + smoothstep(0.82, 1.0, vU);
+            float vein = pow(abs(sin(vV * 7.0 * 3.14159)), 24.0) * smoothstep(0.05, 0.3, vU) * 0.5;
+            diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * diffuseColor.rgb * 0.55, clamp((edge + vein) * uEdges, 0.0, 1.0));
+          }`);
+    };
+    mat.customProgramCacheKey = () => (petals ? 'look-petals' : 'look-solid');
+  }
+  addLook(lily.solidMat, false);
+  const petalMat = createSolidMaterial(u);
+  petalMat.alphaHash = false; petalMat.transparent = true; petalMat.depthWrite = false;   // smooth see-through
+  addLook(petalMat, true);
+  const petalMesh = new THREE.Mesh(lily.geometry, petalMat);
+  petalMesh.frustumCulled = false;
+  lily.add(petalMesh);
   // motion vectors of the flower of now (shares the motion values with the petal material)
   const velMat = new THREE.ShaderMaterial({ vertexShader: VEL_VERT, fragmentShader: VEL_FRAG, side: THREE.DoubleSide, uniforms: {
-    uMFlutter: u.uMFlutter, uMFoot: u.uMFoot, uMT: u.uMT, uMTwist: u.uMTwist, uMSway: u.uMSway,
-    uMS2: { value: 1 }, uMT2: { value: 0 }, uMTwist2: { value: 0 }, uMSway2: { value: new THREE.Vector2() }, uPrevModel: { value: new THREE.Matrix4() } } });
+    uMFlutter: u.uMFlutter, uMFoot: u.uMFoot, uMAxis: u.uMAxis, uMPh: u.uMPh, uMTwist: u.uMTwist, uMSway: u.uMSway,
+    uMS2: { value: 1 }, uMPh2: { value: 0 }, uMTwist2: { value: 0 }, uMSway2: { value: new THREE.Vector2() }, uPrevModel: { value: new THREE.Matrix4() } } });
 
+  // the flower at any opening: generated at ARC_STEPS values of Petal Arc Bend (each one once, when first
+  // needed, until a flower slider changes) and blended between the two nearest, like shape keys
+  let arcCache = new Map();
+  function arcTarget(i) {
+    let a = arcCache.get(i);
+    if (!a) {
+      const arc = ARC_CLOSED + (ARC_OPEN - ARC_CLOSED) * (i / (ARC_STEPS - 1));
+      a = generateLily({ ...lilyParams, 'Petal Arc Bend': arc }, lilyParams['Flower Blooming']).position;
+      arcCache.set(i, a);
+    }
+    return a;
+  }
+  function poseInto(out, o) {                          // o: 0 = closed bud ... 1 = fully open
+    const x = Math.min(1, Math.max(0, o)) * (ARC_STEPS - 1), i = Math.min(Math.floor(x), ARC_STEPS - 2), f = x - i;
+    const a = arcTarget(i), b = arcTarget(i + 1);
+    if (a.length !== out.length || b.length !== out.length) return;
+    for (let k = 0; k < out.length; k++) out[k] = a[k] + (b[k] - a[k]) * f;
+  }
   // the 3 poses of the flower (oldest, middle, now) for the long exposure; now = the normal positions
   let poseGeo = null;
-  function setPoses(bloomA, bloomB, bloomNow) {
-    lily.setBloom(bloomNow);
+  function poseAttrs() {
     const g = lily.geometry, n = g.attributes.position.array.length;
     if (poseGeo !== g || g.attributes.aPosA?.array.length !== n) {
-      poseGeo = g;
+      poseGeo = g; petalMesh.geometry = g;
       g.setAttribute('aPosA', new THREE.BufferAttribute(new Float32Array(n), 3));
       g.setAttribute('aPosB', new THREE.BufferAttribute(new Float32Array(n), 3));
     }
-    for (const [name, b] of [['aPosA', bloomA], ['aPosB', bloomB]]) {
-      const a = g.attributes[name];
-      if (b === bloomNow) a.array.set(g.attributes.position.array);
-      else { const d = generateLily(lilyParams, b).position; if (d.length === n) a.array.set(d); else a.array.set(g.attributes.position.array); }
-      a.needsUpdate = true;
-    }
+    return g;
+  }
+  function setPoses(oA, oB, oNow) {
+    const g = poseAttrs();
+    poseInto(g.attributes.position.array, oNow); g.attributes.position.needsUpdate = true;
+    g.computeVertexNormals();
+    poseInto(g.attributes.aPosA.array, oA); g.attributes.aPosA.needsUpdate = true;
+    poseInto(g.attributes.aPosB.array, oB); g.attributes.aPosB.needsUpdate = true;
   }
   function rebuildLily() {
     Object.assign(lilyParams, params);
     if (!params['Show Stem + Leaves']) { lilyParams['Stem Length'] = 0; lilyParams['Leaf Count'] = 0; }
-    lily.rebuild();
-    poseGeo = null; setPoses(params['Flower Blooming'], params['Flower Blooming'], params['Flower Blooming']);
+    lily.rebuild();                                          // still flower: exactly as the sliders say
+    arcCache = new Map();
+    const g = poseAttrs();
+    for (const k of ['aPosA', 'aPosB']) { g.attributes[k].array.set(g.attributes.position.array); g.attributes[k].needsUpdate = true; }
     lily.geometry.computeBoundingBox(); u.uMFoot.value = Math.min(-0.5, lily.geometry.boundingBox.min.y);
     lily.points.visible = lily.wire.visible = false;
     if (lily.sparkles) lily.sparkles.visible = false;
     lily.solidMat.transparent = false;
-    lily.solidMat.opacity = params['Petal Opacity'];        // alpha hash: see-through petals, smoothed by the blur
+    lily.solidMat.opacity = 1;                               // stem, leaves, stamens: solid
+    petalMat.opacity = params['Petal Opacity'];              // petals: overall opacity (times the middle / edge opacity)
+    u.uMAxis.value.set(0, Math.cos(lilyParams['Head Tilt']), Math.sin(lilyParams['Head Tilt']));   // where the head looks
     dirty = true;
   }
 
@@ -378,6 +437,15 @@ export function createLookPage() {
     dirty = true;
   }
 
+  // the flower of now, full size, with depth. The see-through petals don't write depth while they are drawn
+  // (so petals behind them still show), so their depth is added afterwards for the depth blur
+  function renderNow() {
+    renderer.setRenderTarget(sceneRT); renderer.clear(); renderer.render(scene, camera);
+    lily.mesh.visible = false; petalMat.colorWrite = false; petalMat.depthWrite = true;
+    renderer.render(scene, camera);
+    lily.mesh.visible = true; petalMat.colorWrite = true; petalMat.depthWrite = false;
+  }
+
   function render(t = performance.now() / 1000) {
     // 1. the flower (transparent background) + depth. While it breathes: a long exposure of many copies
     let colorTex = sceneRT.texture;
@@ -385,7 +453,7 @@ export function createLookPage() {
     const L = params['Trail Length (s)'], n = Math.round(params['Trail Copies']);
     const dt = Math.min(Math.max(t - lastT, 0), 0.1); lastT = t;
     if (moving && L > 0 && n > 1) {
-      setPoses(bloomAt(t - L), bloomAt(t - L / 2), bloomAt(t));
+      setPoses(opennessAt(t - L), opennessAt(t - L / 2), opennessAt(t));
       const k = params['Trail Fade'] * 3;
       let sum = 0; const w = [];
       for (let i = 0; i < n; i++) { w.push(Math.pow((i + 1) / n, k)); sum += w[i]; }
@@ -402,7 +470,7 @@ export function createLookPage() {
       if (params['Streaks'] > 0) {
         const dt2 = Math.min(L * 0.5, 0.6), m2 = motionVals(t - dt2);
         const vu = velMat.uniforms;
-        vu.uMS2.value = 1 - dt2 / L; vu.uMT2.value = t - dt2; vu.uMTwist2.value = m2.twist; vu.uMSway2.value.copy(m2.sway);
+        vu.uMS2.value = 1 - dt2 / L; vu.uMPh2.value = m2.ph; vu.uMTwist2.value = m2.twist; vu.uMSway2.value.copy(m2.sway);
         vu.uPrevModel.value.makeRotationY(m2.turn);
         motionAt(t, 1);
         scene.overrideMaterial = velMat;
@@ -423,15 +491,15 @@ export function createLookPage() {
       } else glowFresh = true;
       // the flower of now, full size, on top
       motionAt(t, 1);
-      renderer.setRenderTarget(sceneRT); renderer.clear(); renderer.render(scene, camera);
+      renderNow();
       combineMat.uniforms.tTrail.value = trailTex; combineMat.uniforms.tNow.value = sceneRT.texture;
       combineMat.uniforms.uNow.value = params['Now Strength'];
       pass(combineMat, colorRT);
       colorTex = colorRT.texture;
     } else {
-      if (moving) setPoses(bloomAt(t), bloomAt(t), bloomAt(t));
+      if (moving) setPoses(opennessAt(t), opennessAt(t), opennessAt(t));
       motionAt(moving ? t : t0, 1);
-      renderer.setRenderTarget(sceneRT); renderer.clear(); renderer.render(scene, camera);
+      renderNow();
       glowFresh = true;
     }
     // 2. how blurred each pixel should be
@@ -482,6 +550,9 @@ export function createLookPage() {
   ff.add(params, 'Blossom Value', 0, 1, 0.01).name('Colour (brightness)').onChange(() => { save(); Object.assign(lilyParams, params); lily.updateColour(); dirty = true; });
   ff.add(params, 'Petal Opacity', 0.2, 1, 0.01).name('Petal opacity').onChange(onFlower);
   ff.add(params, 'Petal Edges', 0, 1, 0.01).name('Petal edges + veins').onChange(onLook);
+  ff.add(params, 'Petal Centre Opacity', 0, 1, 0.01).name('Petal middle opacity').onChange(onLook);
+  ff.add(params, 'Petal Edge Opacity', 0, 1, 0.01).name('Petal edge opacity').onChange(onLook);
+  ff.add(params, 'Petal Opacity Blend', 0.05, 1, 0.01).name('Middle → edge softness').onChange(onLook);
   ff.add(params, 'Show Stem + Leaves').name('Stem + leaves').onChange(onFlower);
 
   const fb = gui.addFolder('Blur (frosted glass)');
@@ -510,7 +581,8 @@ export function createLookPage() {
   fbr.add(params, 'Breathing').name('Breathe (open + close)').onChange((v) => { save(); if (!v) rebuildLily(); dirty = true; });
   fbr.add(params, 'Breath In (s)', 1, 10, 0.1).name('Breath in (opens), s').onChange(onLook);
   fbr.add(params, 'Breath Out (s)', 1, 10, 0.1).name('Breath out (closes), s').onChange(onLook);
-  fbr.add(params, 'Breathing Amount', 0, 0.8, 0.01).name('How much it opens/closes').onChange(onLook);
+  fbr.add(params, 'Open Most', 0, 1, 0.01).name('Most open (1 = fully)').onChange(onLook);
+  fbr.add(params, 'Closed Most', 0, 1, 0.01).name('Most closed (0 = bud)').onChange(onLook);
   fbr.add(params, 'Breath Turn', 0, 120, 0.5).name('Turn with the breath (°)').onChange(onLook);
   fbr.add(params, 'Sway', 0, 25, 0.1).name('Sway on the stem (°)').onChange(onLook);
   fbr.add(params, 'Petal Lag', 0, 3, 0.01).name('Petal tips lag (swirl)').onChange(onLook);
@@ -533,11 +605,22 @@ export function createLookPage() {
     },
     'Copy settings (JSON)': async () => { try { await navigator.clipboard.writeText(JSON.stringify(params, null, 2)); } catch { console.log(JSON.stringify(params, null, 2)); } },
     'Reset settings': () => {
-      Object.assign(params, flowerDefaults, LOOK_DEFAULTS, { 'Blossom Hue': 0.03, 'Blossom Saturation': 0.7, 'Blossom Value': 0.75, 'Spot Amount': 0 });
+      Object.assign(params, flowerDefaults, LOOK_DEFAULTS);
       save(); gui.controllersRecursive().forEach((c) => c.updateDisplay()); rebuildLily();
     },
   };
   for (const k of Object.keys(actions)) gui.add(actions, k);
+
+  // the Blender flower: its settings become the flower defaults (settings changed on this page and saved stay)
+  fetch(BLENDER_LILY_URL).then((r) => r.json()).then((j) => {
+    for (const [k, v] of Object.entries(j.settings ?? {})) {
+      if (!(k in flowerDefaults) || typeof v !== 'number') continue;
+      flowerDefaults[k] = v;
+      if (!(k in stored)) params[k] = v;
+    }
+    gui.controllersRecursive().forEach((c) => c.updateDisplay());
+    rebuildLily();
+  }).catch((e) => console.warn('Lily look: could not load the Blender flower settings, using the web defaults', e));
 
   // ---------------------------------------------------------------- loop (only renders when something changed)
   let running = false, raf = 0;
@@ -548,24 +631,27 @@ export function createLookPage() {
     const ph = (((t - t0) % (tin + tout)) + (tin + tout)) % (tin + tout);
     return ph < tin ? 0.5 - 0.5 * Math.cos(Math.PI * ph / tin) : 0.5 + 0.5 * Math.cos(Math.PI * (ph - tin) / tout);
   }
-  function bloomAt(t) {                                // how open the flower is at moment t
-    const amt = params['Breathing Amount'];
-    return Math.min(1, Math.max(0, params['Flower Blooming'] - amt / 2 + amt * openAt(t)));
-  }
+  // how open the flower is at moment t: 0 = closed bud (arc bend -0.9) ... 1 = fully open (arc bend 1.66).
+  // No clamping anywhere, so the flower never sits still at the open or closed end
+  const opennessAt = (t) => params['Closed Most'] + (params['Open Most'] - params['Closed Most']) * openAt(t);
   const turnAt = (t) => THREE.MathUtils.degToRad(params['Breath Turn']) * (openAt(t) - 0.5);
   const _sway = new THREE.Vector2();
-  function motionVals(t) {                             // the rest of the movement at moment t: turn, petal swirl, sway
+  // the rest of the movement at moment t: turn, petal swirl, sway, flutter. All of it repeats exactly with every
+  // breath (same rhythm, whole multiples of it), so the loop has no jumps
+  function motionVals(t) {
     const open = openAt(t), cycle = params['Breath In (s)'] + params['Breath Out (s)'];
-    const ph = ((t - t0) / cycle) * Math.PI * 2, sway = THREE.MathUtils.degToRad(params['Sway']);
+    const ph = ((((t - t0) / cycle) % 1 + 1) % 1) * Math.PI * 2, sway = THREE.MathUtils.degToRad(params['Sway']);
     return {
+      ph,
       turn: turnAt(t),
       twist: -(turnAt(t) - turnAt(t - 0.4)) * params['Petal Lag'],     // tips follow the turn a bit later
-      sway: _sway.set(sway * ((open - 0.5) * 1.4 + 0.3 * Math.sin(ph * 0.5 + 0.7)), sway * 0.6 * Math.sin(ph + 1.3)),
+      sway: _sway.set(sway * (open - 0.5) * 1.4, sway * 0.6 * Math.sin(ph + 1.3)),
     };
   }
   function motionAt(t, s) {                            // put the flower at moment t (s: 0 oldest pose .. 1 now)
     const m = motionVals(t);
-    u.uMS.value = s; u.uMT.value = t; u.uMTwist.value = m.twist; u.uMSway.value.copy(m.sway);
+    u.uMS.value = s; u.uMPh.value = m.ph; u.uMTwist.value = m.twist; u.uMSway.value.copy(m.sway);
+    u.uOpCentre.value = params['Petal Centre Opacity']; u.uOpEdge.value = params['Petal Edge Opacity']; u.uOpBlend.value = params['Petal Opacity Blend'];
     u.uMFlutter.value = params['Petal Flutter'];
     u.uEdges.value = params['Petal Edges'];
     lily.rotation.y = m.turn;
