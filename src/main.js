@@ -12,6 +12,7 @@ import { Tracking } from './lily/tracking.js';
 import { createRootsPage } from './roots/growth.js';
 import { createRootsPage as createRootsPageV2 } from './roots-v2/growth.js';   // working copy of page 4
 import { createWaterPage } from './water/water.js';                         // page 8: soil, water, seeds
+import { createSparkPage } from './spark/spark.js';                         // page 9: spark -> water -> oxygen
 import { Fibres, fibreUniforms } from './lily/fibres.js';
 import { OutlineParticles, outlineUniforms } from './lily/outline.js';
 import { Lily } from './lily/Lily.js';
@@ -76,6 +77,7 @@ const tracking = new Tracking(lily, camera, renderer, params);   // style 3 (2D 
 const rootsPage = createRootsPage(params);                           // page 4 (its own page, camera + roots)
 const rootsPageV2 = createRootsPageV2(params);                       // page 6: a copy of page 4 to try changes on
 const waterPage = createWaterPage();                                 // page 8: its own page
+const sparkPage = createSparkPage();                                 // page 9: its own page
 
 // ------------------------------------------------------------------ glow
 const composer = new EffectComposer(renderer);
@@ -231,7 +233,7 @@ function alertSmall(text) {
 }
 window.addEventListener('keydown', (e) => {
   if (e.key === 'h') gui.show(gui._hidden);                     // H hides the panel
-  if (['1', '2', '3', '4', '5', '6', '7', '8'].includes(e.key)) setStyle(Number(e.key)); // 1–8 switch the style
+  if (['1', '2', '3', '4', '5', '6', '7', '8', '9'].includes(e.key)) setStyle(Number(e.key)); // 1–9 switch the style
 });
 
 // ------------------------------------------------------------------ styles (buttons at the top)
@@ -248,13 +250,14 @@ function setStyle(n) {
   if (n === 3) folders['3 · Tracking'].open();
   if (n !== 3) tracking.clear();
   // pages 4 and 6 are separate pages: hide the 3D view and the panel, start the roots
-  const isRoots = n === 4 || n === 6 || n === 8;   // (8 = water page)
+  const isRoots = n === 4 || n === 6 || n === 8 || n === 9;   // (8 = water, 9 = spark page)
   renderer.domElement.style.display = isRoots ? 'none' : '';
   document.getElementById('hint').style.display = isRoots ? 'none' : '';
   isRoots ? gui.hide() : gui.show();
   n === 4 ? rootsPage.show() : rootsPage.hide();
   n === 6 ? rootsPageV2.show() : rootsPageV2.hide();
   n === 8 ? waterPage.show() : waterPage.hide();
+  n === 9 ? sparkPage.show() : sparkPage.hide();
   if (isRoots) return;
   if (n === 2 || n === 5) folders['2 · Fibres'].open();
   params['Auto Play'] = true;
@@ -269,7 +272,7 @@ function frame() {
   uniforms.uTime.value = t;
 
   const dt = Math.min(t - (frame.last ?? t), 0.1); frame.last = t;
-  if (params.Style === 4 || params.Style === 6 || params.Style === 8) { requestAnimationFrame(frame); return; }     // roots page runs its own loop
+  if (params.Style === 4 || params.Style === 6 || params.Style === 8 || params.Style === 9) { requestAnimationFrame(frame); return; }     // roots page runs its own loop
   outline.visible = params.Style === 7;
   if (params.Style === 7) styleOutline(t);
   else if (params.Style === 5) styleBuildDust(t);
@@ -454,7 +457,7 @@ function styleOutline(t) {
   outline.sync(Math.min(Math.max(bloom, 0), 1));
 }
 
-setStyle([1, 2, 3, 4, 5, 6, 7, 8].includes(params.Style) ? params.Style : 1);
+setStyle([1, 2, 3, 4, 5, 6, 7, 8, 9].includes(params.Style) ? params.Style : 1);
 frame();
 
 // handy for testing in the browser console, e.g. lilyApp.params['Build Progress'] = 0.5
