@@ -4,20 +4,17 @@ The procedural lily from Blender, rebuilt for the browser with Three.js.
 It plays the build-up (points → wireframe → real flower), then keeps breathing:
 the petals slowly open and close, with a gentle sway and a few sparkles.
 
-## Styles
+## Pages
 
-Switch with the buttons at the top (or keys **1** / **2**):
+Switch with the buttons at the top (or keys **1**–**6**):
 
-1. **Build-up**: points → wireframe → real flower, then breathing.
-2. **Fibres**: thousands of short wiggling strands grow out of the flower, coloured like the petal with
-   frosted tips, plus faint threads between the petals. The flower grows a little and opens while the
-   fibres appear, then breathes (the fibres stretch a bit when it breathes in). Settings: *2 · Fibres* panel.
-
-3. **Tracking**: selection boxes find and follow parts of the flower (panel *3 · Tracking*).
-4. **Roots**: "Growth test 03" – roots grow towards a flashlight seen by the webcam
-   Works with the mouse by default (hold the button = light on). Tick *Use camera (flashlight)* for the real thing,
-   then press *Calibrate* with the flashlight off. Pressing the same spot again makes it grow stronger.
-   Code: `src/roots/growth.js` (the original code, only wrapped so it runs as page 4).
+1. **Flower1**: points → wireframe → real flower, then breathing.
+2. **Flower2**: fibres – short wiggling strands grow out of the flower, then it breathes. Panel *2 · Fibres*.
+3. **Flower3**: selection boxes find and follow parts of the flower. Panel *3 · Tracking*.
+4. **Flower4**: particles trace the outlines (stem, leaves, petals base → tip), then the flower appears. Panel *4 · Outline particles*.
+5. **Roots**: roots grow from the flashlight (webcam) or the mouse, with leaves and flowers, breathing,
+   and *Fake lights* for testing. Code: `src/roots/`.
+6. **Water**: soil, water appears where the light is, seeds sprout. Code: `src/water/`.
 
 ## Run it
 
@@ -46,7 +43,9 @@ Your settings are remembered in this browser. Press **H** to hide the panel.
 - `src/lily/generator.js` – builds the flower (JavaScript version of the Geometry Nodes)
 - `src/lily/materials.js` – petal material, points, wireframe and sparkles (shaders)
 - `src/lily/Lily.js` – puts the flower together and updates it
-- `src/lily/fibres.js` – style 2 (fibres and threads)
+- `src/lily/fibres.js` – Flower2 (fibres and threads)
+- `src/lily/outline.js` – Flower4 (outline particles)
+- `src/roots/` – Roots page · `src/water/` – Water page
 - `src/main.js` – scene, lights, camera, glow, animation timeline and the slider panel
 
 ## How it works (short)

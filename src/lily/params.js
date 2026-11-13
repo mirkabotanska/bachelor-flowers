@@ -174,7 +174,7 @@ export const TRACK_PARAMS = {
 // so to bring one back, just remove it from this list.
 // Style 7: particles tracing the outlines of the flower
 export const OUTLINE_PARAMS = {
-  '7 · Outline particles': {
+  '4 · Outline particles': {
     'Outline Lead': [0.3, 0, 0.6, 0.005],             // how far the solid flower follows behind the dots (higher = see the outline longer)
     'Outline Particles': [5000, 500, 20000, 100],     // how many dots in total
     'Outline Spread': [0.012, 0, 0.08, 0.001],        // how far they sit from the exact outline (low = tight line)

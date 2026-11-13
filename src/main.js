@@ -9,10 +9,8 @@ import GUI from 'lil-gui';
 
 import { FLOWER_PARAMS, EFFECT_PARAMS, FIBRE_PARAMS, FIBRE_VERSION, BREATH_EXCLUDE, BREATH_CURVES, DEFAULT_BREATH_ANIMS, HIDDEN, TRACK_PARAMS, defaults, OUTLINE_PARAMS } from './lily/params.js';
 import { Tracking } from './lily/tracking.js';
-import { createRootsPage } from './roots/growth.js';
-import { createRootsPage as createRootsPageV2 } from './roots-v2/growth.js';   // working copy of page 4
-import { createWaterPage } from './water/water.js';                         // page 8: soil, water, seeds
-import { createSparkPage } from './spark/spark.js';                         // page 9: spark -> water -> oxygen
+import { createRootsPage } from './roots/growth.js';                         // page 5: roots
+import { createWaterPage } from './water/water.js';                         // page 6: soil, water, seeds
 import { Fibres, fibreUniforms } from './lily/fibres.js';
 import { OutlineParticles, outlineUniforms } from './lily/outline.js';
 import { Lily } from './lily/Lily.js';
@@ -36,6 +34,9 @@ if (!params._breathAnims || params['Dust Distance (breathing in)'] !== undefined
   for (const old of ['Dust Distance (breathing in)', 'Dust Distance (breathing out)', 'Dust Opacity In Flower', 'Particles Out On Inhale', 'Core Glow Pulse', 'Fibre Breathing']) delete params[old];
 }
 for (const n of HIDDEN) { params[n] = DEFAULTS[n]; delete params._breathAnims?.[n]; }   // hidden settings stay at their default
+if (params._styleVersion !== 2) {                  // pages were renumbered: 1-3 same, outline 7->4, roots v2 6->5, water 8->6
+  params.Style = { 1: 1, 2: 2, 3: 3, 6: 5, 7: 4, 8: 6 }[params.Style] ?? 1; params._styleVersion = 2;
+}
 const save = () => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(params)); } catch { /* ignore */ } };
 
 // ------------------------------------------------------------------ renderer, scene, camera
@@ -70,14 +71,12 @@ const swayGroup = new THREE.Group();
 swayGroup.add(lily);
 const fibres = new Fibres(lily, params);          // style 2
 swayGroup.add(fibres);
-const outline = new OutlineParticles(params);      // style 7
+const outline = new OutlineParticles(params);      // style 4
 swayGroup.add(outline);
 scene.add(swayGroup);
 const tracking = new Tracking(lily, camera, renderer, params);   // style 3 (2D overlay)
-const rootsPage = createRootsPage(params);                           // page 4 (its own page, camera + roots)
-const rootsPageV2 = createRootsPageV2(params);                       // page 6: a copy of page 4 to try changes on
-const waterPage = createWaterPage();                                 // page 8: its own page
-const sparkPage = createSparkPage();                                 // page 9: its own page
+const rootsPage = createRootsPage(params);                           // page 5 (its own page, camera + roots)
+const waterPage = createWaterPage();                                 // page 6: its own page
 
 // ------------------------------------------------------------------ glow
 const composer = new EffectComposer(renderer);
@@ -111,7 +110,7 @@ function applyEffectParams() {
   bloomPass.threshold = params['Bloom Threshold'];
   renderer.toneMappingExposure = params['Exposure'];
   applyFibreParams(params);
-  const ou = outlineUniforms;                         // style 7
+  const ou = outlineUniforms;                         // style 4
   ou.uSpread.value = params['Outline Spread']; ou.uSize.value = params['Outline Dot Size (px)'];
   ou.uBright.value = params['Outline Brightness']; ou.uAfter.value = params['Outline After Build'];
   ou.uTwinkle.value = params['Outline Twinkle']; ou.uDrift.value = params['Outline Drift'];
@@ -233,7 +232,7 @@ function alertSmall(text) {
 }
 window.addEventListener('keydown', (e) => {
   if (e.key === 'h') gui.show(gui._hidden);                     // H hides the panel
-  if (['1', '2', '3', '4', '5', '6', '7', '8', '9'].includes(e.key)) setStyle(Number(e.key)); // 1–9 switch the style
+  if (['1', '2', '3', '4', '5', '6'].includes(e.key)) setStyle(Number(e.key)); // 1–6 switch the style
 });
 
 // ------------------------------------------------------------------ styles (buttons at the top)
@@ -241,25 +240,23 @@ const styleButtons = [...document.querySelectorAll('#styles button')];
 function setStyle(n) {
   params.Style = n; save();
   styleButtons.forEach((b) => b.classList.toggle('active', Number(b.dataset.style) === n));
-  folders['Build-up'].show(n === 1 || n === 5 || n === 7);
-  folders['7 · Outline particles'].show(n === 7);
-  if (n === 7) folders['7 · Outline particles'].open();
-  folders['2 · Fibres'].show(n === 2 || n === 5);
+  folders['Build-up'].show(n === 1 || n === 4);
+  folders['4 · Outline particles'].show(n === 4);
+  if (n === 4) folders['4 · Outline particles'].open();
+  folders['2 · Fibres'].show(n === 2);
   folders['Breathing animation'].show(n === 2);
   folders['3 · Tracking'].show(n === 3); folders['3 · Extra effects'].show(n === 3);
   if (n === 3) folders['3 · Tracking'].open();
   if (n !== 3) tracking.clear();
-  // pages 4 and 6 are separate pages: hide the 3D view and the panel, start the roots
-  const isRoots = n === 4 || n === 6 || n === 8 || n === 9;   // (8 = water, 9 = spark page)
+  // pages 5 (roots) and 6 (water) are separate pages: hide the 3D view and the panel
+  const isRoots = n === 5 || n === 6;
   renderer.domElement.style.display = isRoots ? 'none' : '';
   document.getElementById('hint').style.display = isRoots ? 'none' : '';
   isRoots ? gui.hide() : gui.show();
-  n === 4 ? rootsPage.show() : rootsPage.hide();
-  n === 6 ? rootsPageV2.show() : rootsPageV2.hide();
-  n === 8 ? waterPage.show() : waterPage.hide();
-  n === 9 ? sparkPage.show() : sparkPage.hide();
+  n === 5 ? rootsPage.show() : rootsPage.hide();
+  n === 6 ? waterPage.show() : waterPage.hide();
   if (isRoots) return;
-  if (n === 2 || n === 5) folders['2 · Fibres'].open();
+  if (n === 2) folders['2 · Fibres'].open();
   params['Auto Play'] = true;
   gui.controllersRecursive().forEach((c) => c.updateDisplay());
   replay();
@@ -272,10 +269,9 @@ function frame() {
   uniforms.uTime.value = t;
 
   const dt = Math.min(t - (frame.last ?? t), 0.1); frame.last = t;
-  if (params.Style === 4 || params.Style === 6 || params.Style === 8 || params.Style === 9) { requestAnimationFrame(frame); return; }     // roots page runs its own loop
-  outline.visible = params.Style === 7;
-  if (params.Style === 7) styleOutline(t);
-  else if (params.Style === 5) styleBuildDust(t);
+  if (params.Style === 5 || params.Style === 6) { requestAnimationFrame(frame); return; }     // roots / water page run their own loop
+  outline.visible = params.Style === 4;
+  if (params.Style === 4) styleOutline(t);
   else if (params.Style === 3) styleTracking(t, dt);
   else if (params.Style === 2) styleFibres(t);
   else styleBuildUp(t);
@@ -293,7 +289,7 @@ function frame() {
 
 // ---- style 1: points -> wireframe -> solid, then breathing (unchanged)
 function styleBuildUp(t) {
-  uniforms.uSolidDelay.value = params['Solid Delay'];      // (style 7 uses its own value)
+  uniforms.uSolidDelay.value = params['Solid Delay'];      // (style 4 uses its own value)
   lily.points.visible = lily.wire.visible = lily.sparkles.visible = true;
   fibres.visible = false;
   swayGroup.scale.setScalar(1);
@@ -416,34 +412,7 @@ function styleTracking(t, dt) {
   tracking.update(dt, S(p, 0.1, 0.7));                                    // boxes start while the flower appears
 }
 
-// ---- style 5: the build-up from style 1, with dust from style 2 streaming out of the vertices
-function styleBuildDust(t) {
-  styleBuildUp(t);                                   // points -> wireframe -> flower, breathing (unchanged)
-  fibres.visible = true;
-
-  // breathing in/out (same rhythm as the petals), for the 'Breathing animation' values of the dust
-  let spread = 1;
-  if (params['Auto Play'] && breathStart !== null) {
-    const bt = t - breathStart;
-    const wave = Math.sin((bt / params['Breath Length (s)']) * Math.PI * 2);
-    spread = 1 - Math.min(bt / 2, 1) * (0.5 + 0.5 * (params['Breath Reverse'] ? -wave : wave));
-  }
-  const v = { ...params };
-  for (const [name, a] of Object.entries(params._breathAnims)) {
-    const curve = BREATH_CURVES[a.curve] ?? BREATH_CURVES.Smooth;
-    v[name] = THREE.MathUtils.lerp(a.in, a.out, curve(spread));
-  }
-  applyFibreParams(v);
-  fibreUniforms.uOpacity.value = 0;                  // no streaks, only dust
-  fibreUniforms.uStrandFraction.value = 0;
-  fibreUniforms.uDustFraction.value = 1;
-  fibreUniforms.uReveal.value = uniforms.uProgress.value;   // dust appears as the vertices appear
-  fibreUniforms.uBreath.value = 0;
-  fibreUniforms.uTime.value = t;
-  fibres.update({ strands: 1, dust: Math.round(v['Dust Count']), atVertices: true });
-}
-
-// ---- style 7: particles trace the outlines (stem first, then leaves, petals base -> tip), then the flower appears
+// ---- style 4: particles trace the outlines (stem first, then leaves, petals base -> tip), then the flower appears
 function styleOutline(t) {
   styleBuildUp(t);                                   // same timeline and breathing as style 1
   uniforms.uSolidDelay.value = params['Outline Lead'];
@@ -457,7 +426,7 @@ function styleOutline(t) {
   outline.sync(Math.min(Math.max(bloom, 0), 1));
 }
 
-setStyle([1, 2, 3, 4, 5, 6, 7, 8, 9].includes(params.Style) ? params.Style : 1);
+setStyle([1, 2, 3, 4, 5, 6].includes(params.Style) ? params.Style : 1);
 frame();
 
 // handy for testing in the browser console, e.g. lilyApp.params['Build Progress'] = 0.5

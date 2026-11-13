@@ -1,4 +1,4 @@
-/* Page 4 – Roots. Your friend's style.css, scoped to the roots page. */
+/* Page 5 – Roots. Your friend's style.css, scoped to the roots page. */
 #roots-page.lab {
   position: fixed;
   inset: 0;
@@ -79,3 +79,8 @@
 #roots-page .view--wide { position: relative; }
 #roots-page .view__canvas--growth { position: relative; z-index: 1; background: transparent; mix-blend-mode: screen; }
 #roots-page .view__canvas--flowers { z-index: 0; display: block; }
+
+/* [added v2] fake lights button */
+#roots-page .fake { display: flex; align-items: center; gap: 12px; margin: 0 0 16px; }
+#roots-page .fake__button, #roots-page .fake__stop { padding: 8px 16px; font: inherit; cursor: pointer; }
+#roots-page .fake__info { color: #aaa; font-size: 14px; }
