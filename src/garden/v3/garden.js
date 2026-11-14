@@ -12,6 +12,11 @@
 //    draws it with the same shader code. What depends on size is measured per lily, in its own size: the depth
 //    blur (focus + depth range, so a small lily is as soft as page 7's lily seen from further away) and its haze
 //    on the wall (scaled around each lily). The roots keep their own blur / haze settings ('Roots: …' folders).
+//  - every lily is a bit different: its blur (some sharper, some softer: 'Flower blur' x a random amount per lily,
+//    'Blur varies between flowers') and its angle (from the side, like page 7, up to a 3/4 view: 'Angles up to',
+//    'Angle randomness'). Breathing, trails and blur are in the lily's own space, so they work at every angle.
+//  - flowers keep a distance from the tip of their branch ('Flower distance from tip'): the branch grows on past
+//    the flower (a little further if it stopped too early), so it never ends at a flower.
 // The roots of page 5 and the lily + look of page 7, together.
 //  - roots grow where the light is (camera flashlight, mouse, or fake lights), exactly like page 5 (growth.js),
 //    but they are drawn as real 3D tubes in the wall plane (tubes.js): round, lit, thicker at the base, thinner
@@ -35,7 +40,7 @@ import GUI from 'lil-gui';
 import { FLOWER_PARAMS, defaults } from '../../lily/params.js';
 import { generateLily, hsv, rand } from '../../lily/generator.js';
 import { uniforms as sharedUniforms, createSolidMaterial } from '../../lily/materials.js';
-import { createGrowth } from './growth.js';
+import { createGrowth, STEP_LENGTH } from './growth.js';
 import { createLightInput } from './lights.js';
 import { RootTubes, Particles, waveZ, swayAngle, originPhase, WAVE_PERIOD, SWAY_PERIOD } from './tubes.js';
 import { loadLook7, BLENDER_LILY_URL, LOOK7_TARGET_Y, LOOK7_VIEW_TILT } from './look7.js';
@@ -60,7 +65,12 @@ const EDGE_MARGIN = 70;               // px: no flowers this close to the edge
 const GARDEN_DEFAULTS = {
   // garden: flowers and leaves on the roots
   'Flower Size': 0.6,
-  'Flower Lean (°)': Math.round(LOOK7_VIEW_TILT * 10) / 10,   // towards the viewer; page 7 sees its lily from this angle
+  'Flower Lean (°)': Math.round(LOOK7_VIEW_TILT * 10) / 10,   // the side view: page 7 sees its lily from this angle
+  'Flower Angle Max (°)': 45,   // angles up to this (towards the viewer): 45 = a 3/4 view
+  'Flower Angle Random': 0.8,   // 0 = every lily halfway between, 1 = anywhere from the side view to the most
+  'Flower Blur': 0.75,          // the blur on the lilies (1 = page 7's)
+  'Flower Blur Variation': 0.6, // how much it differs between lilies (0 = all the same)
+  'Flower Tip Distance (px)': 36,   // a flower stays at least this far from the tip of its branch
   'Max Flowers': 8,
   'Flower Spacing': 110,        // px between flowers
   'Stem Grow (s)': 1.6,         // the stem (with its leaves) grows out of the root, while the root grows on
@@ -178,8 +188,8 @@ const COCF_VERT = /* glsl */ `
     vec3 n; vec4 mv = modelViewMatrix * vec4(lookMove(position, normal, aPart, aU, aSeed, uMS, uMPh, uMTwist, uMSway, n), 1.0);
     vZ = -mv.z; gl_Position = projectionMatrix * mv;
   }`;
-const COCF_FRAG = /* glsl */ `uniform float uFocusF, uRangeF, uBaseF, uBehindF; varying float vZ;
-  void main(){ float off = vZ - uFocusF; if (uBehindF > 0.5) off = max(off, 0.0); gl_FragColor = vec4(clamp(uBaseF + abs(off) / uRangeF, 0.0, 1.0), 0.0, 0.0, 1.0); }`;
+const COCF_FRAG = /* glsl */ `uniform float uFocusF, uRangeF, uBaseF, uBehindF, uScaleF; varying float vZ;
+  void main(){ float off = vZ - uFocusF; if (uBehindF > 0.5) off = max(off, 0.0); gl_FragColor = vec4(clamp((uBaseF + abs(off) / uRangeF) * uScaleF, 0.0, 1.0), 0.0, 0.0, 1.0); }`;
 const STREAK_FRAG = /* glsl */ `
   uniform sampler2D tInput, tVel; uniform float uLen; varying vec2 vUv;
   void main(){
@@ -503,7 +513,8 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
       this.root = root; this.index = index; this.anchor = growth.anchorOn(root, index);
       this.born = growth.now;
       this.size = size; this.dir = dir;
-      this.lean = this.isFlower ? null : rnd(0.35, 0.7);     // out of the wall, towards the viewer (flowers: 'Flower lean')
+      this.lean = this.isFlower ? null : rnd(0.35, 0.7);     // out of the wall, towards the viewer (flowers: leanDeg())
+      this.angleR = Math.random(); this.blurR = rnd(-1, 1);    // this lily's own angle and blur (see leanDeg, prepareCoc)
       this.roll = rnd(0, Math.PI * 2);
       this.seedOff = Math.random() * 100;
       this.goAt = null; this.gone = false; this.crumbled = false;
@@ -529,7 +540,7 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
       this.cocMat = new THREE.ShaderMaterial({ vertexShader: COCF_VERT, fragmentShader: COCF_FRAG, side: THREE.DoubleSide, uniforms: {
         uMFlutter: u.uMFlutter, uMFoot: u.uMFoot, uMAxis: u.uMAxis, uMS: u.uMS, uMPh: u.uMPh, uMTwist: u.uMTwist, uMSway: u.uMSway,
         uGrow: u.uGrow, uHead: u.uHead, uStemLen: u.uStemLen, uStemBend: u.uStemBend,
-        uFocusF: { value: 1 }, uRangeF: { value: 1 }, uBaseF: { value: 0 }, uBehindF: { value: 0 } } });
+        uFocusF: { value: 1 }, uRangeF: { value: 1 }, uBaseF: { value: 0 }, uBehindF: { value: 0 }, uScaleF: { value: 1 } } });
       this.outer = new THREE.Group(); this.inner = new THREE.Group(); this.lily = new THREE.Group();
       this.outer.add(this.inner); this.inner.add(this.lily);
       for (const m of this.meshes) { m.frustumCulled = false; m.layers.set(LAYER_FLOWERS); this.lily.add(m); }
@@ -569,7 +580,7 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
       this.outer.position.set(x, y, waveZ(x, y, waveT) * params['Blur Variation']);
       this.outer.rotation.z = this.dir + a - Math.PI / 2;
       this.outer.scale.setScalar(this.size);
-      if (this.isFlower) this.inner.rotation.x = THREE.MathUtils.degToRad(params['Flower Lean (°)']);
+      if (this.isFlower) this.inner.rotation.x = THREE.MathUtils.degToRad(this.leanDeg());
     }
     // the stage of its life: growing, bud, breathing, dissolving
     update(now, dt, lights = []) {
@@ -616,12 +627,19 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
     }
     // page 7's depth blur, in this lily's size: focus = the depth of the point page 7 looks at (+ its Focus
     // Distance), depth range x size. And where its middle is on the screen (its haze is scaled around it)
+    // its angle towards the viewer: from the side view (page 7) up to 'Angles up to', randomly per lily
+    leanDeg() {
+      const side = params['Flower Lean (°)'], most = Math.max(side, params['Flower Angle Max (°)']);
+      return side + (most - side) * (0.5 + (this.angleR - 0.5) * params['Flower Angle Random']);
+    }
     prepareCoc() {
       this.outer.updateMatrixWorld(true);
       _v.set(0, LOOK7_TARGET_Y, 0).applyMatrix4(this.solidMesh.matrixWorld).applyMatrix4(camera.matrixWorldInverse);
       const cu = this.cocMat.uniforms, s = this.size;
       cu.uFocusF.value = -_v.z + params['Focus Distance'] * s; cu.uRangeF.value = params['Depth Range'] * s;
       cu.uBaseF.value = params['Base Blur']; cu.uBehindF.value = params['Only Behind Focus'] ? 1 : 0;
+      // some lilies sharper, some softer: x 0.4 ... 2.5 at full variation
+      cu.uScaleF.value = this.fixedBlur ?? params['Flower Blur'] * Math.pow(2, params['Flower Blur Variation'] * 1.3 * this.blurR);
     }
     screenAnchor(out) {                          // x, y (0..1), radius (screen heights), weight
       const k = this.k;
@@ -665,8 +683,11 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
     }
     return x > EDGE_MARGIN && x < SIM_W - EDGE_MARGIN && y > EDGE_MARGIN && y < SIM_H - EDGE_MARGIN;
   }
-  function tryFlower(root, index) {
+  // flowers stay this many points away from the tip of their branch (unless the branch's end has joined another root)
+  const tipSteps = () => Math.max(1, Math.round(params['Flower Tip Distance (px)'] / STEP_LENGTH));
+  function tryFlower(root, index, joined = false) {
     if (!root || !growth.alive(root) || index < 1 || index >= root.points.length - 1 || (root.cut ?? 0) > index) return false;
+    if (!joined && root.burstSteps === 0 && index > root.points.length - 1 - tipSteps()) return false;   // too near the tip
     if (flowersAlive().length >= params['Max Flowers']) return false;
     const p = pointOf(root, index);
     if (!free(p.x, p.y, params['Flower Spacing'], 'flower')) return false;
@@ -695,7 +716,7 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
   const pendingOf = (spot) => pending.filter((f) => f.spot === spot).length;
   function flowerFor(spot, light = null) {
     if (flowersAlive().length + pending.length >= params['Max Flowers']) return false;
-    const growing = growth.growingOn(spot, 3).filter((r) => !pending.some((f) => f.root === r));
+    const growing = growth.growingOn(spot, tipSteps() + 3).filter((r) => !pending.some((f) => f.root === r));
     let root = null;
     for (const r of growing) {                    // the growing root with the most still to go, where there is room
       const tip = r.points.at(-1);
@@ -718,8 +739,14 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
       const f = pending[i], r = f.root, last = r.points.length - 1;
       let done = !growth.alive(r) || now > f.until;
       if (!done && (r.vigor ?? 1) < 0.2) { f.spot.energy += FLOWER_COST; done = true; }   // the light left first: no flower (energy back)
-      else if (!done && last >= f.index + 1) { tryFlower(r, f.index); done = true; }
-      else if (!done && r.burstSteps === 0 && r.distanceToGrow < 3) { if (last >= 2) tryFlower(r, Math.max(1, last - 1)); done = true; }
+      // the branch has grown far enough past it: the flower appears (the tip is still growing on)
+      else if (!done && last >= f.index + tipSteps()) { tryFlower(r, f.index, true); done = true; }
+      else if (!done && r.burstSteps === 0 && r.distanceToGrow < 3) {
+        // the branch stopped too early: it grows a bit further past the flower (once), or the flower moves back
+        // along the branch (or doesn't come, if the branch is too short)
+        if (!f.extended && (r.vigor ?? 1) > 0.5) { r.burstSteps = f.index + tipSteps() - last + 1; f.extended = true; f.until = now + 2.5; }
+        else { if (last - tipSteps() >= 2) tryFlower(r, last - tipSteps(), true); done = true; }
+      }
       if (done) pending.splice(i, 1);
     }
   }
@@ -731,7 +758,7 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
         dust.push({ x, y, z: 0.02, vx: e.vx / PX, vy: -e.vy / PX, vz: rnd(0, 0.05), born: e.born, life: e.life, size: e.size * 3.2 / PX, color: [c.r, c.g, c.b] });
       } else if (e.type === 'connect') {
         // roots of two lights joined: sometimes a flower right where they meet (the rest comes from the energy below)
-        if ((e.root.vigor ?? 1) > 0.5 && Math.random() < 0.25) tryFlower(e.root, e.root.points.length - 2 - Math.floor(Math.random() * 4));
+        if ((e.root.vigor ?? 1) > 0.5 && Math.random() < 0.25) tryFlower(e.root, e.root.points.length - 2 - Math.floor(Math.random() * 4), true);   // its end joined a root: not a tip
       } else if (e.type === 'boost') {
         if (e.level >= 2) flowerFor(e.spot);
       } else if (e.type === 'leaf') {
@@ -1004,7 +1031,12 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
 
   const fg = gui.addFolder('Garden: flowers');
   fg.add(params, 'Flower Size', 0.2, 1.2, 0.01).name('Flower size').onChange(onLook);
-  fg.add(params, 'Flower Lean (°)', 0, 60, 0.5).name('Lean towards you (°, page 7 = ' + params['Flower Lean (°)'] + ')').onChange(onLook);
+  fg.add(params, 'Flower Lean (°)', 0, 60, 0.5).name('Side view angle (°, page 7 = ' + GARDEN_DEFAULTS['Flower Lean (°)'] + ')').onChange(onLook);
+  fg.add(params, 'Flower Angle Max (°)', 0, 80, 0.5).name('Angles up to (°, 45 = 3/4)').onChange(onLook);
+  fg.add(params, 'Flower Angle Random', 0, 1, 0.01).name('Angle randomness').onChange(onLook);
+  fg.add(params, 'Flower Blur', 0, 1.5, 0.01).name('Flower blur (1 = page 7)').onChange(onLook);
+  fg.add(params, 'Flower Blur Variation', 0, 1, 0.01).name('Blur varies between flowers').onChange(onLook);
+  fg.add(params, 'Flower Tip Distance (px)', 0, 120, 1).name('Flower distance from branch tip (px)').onChange(onLook);
   fg.add(params, 'Max Flowers', 0, 20, 1).name('Flowers at most').onChange(onLook);
   fg.add(params, 'Flower Spacing', 40, 300, 1).name('Space between flowers (px)').onChange(onLook);
   fg.add(params, 'Stem Grow (s)', 0.5, 8, 0.1).name('Stem grows in (s)').onChange(onLook);
@@ -1116,7 +1148,7 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
     testFlower({ x = 0, y = 0, size = params['Flower Size'], lean, roll = 0, seedOff = 0, centre = false } = {}) {
       const fake = { points: [{ x: 0, y: 0, t: 0 }, { x: 0, y: 0, t: 0 }], spot: 0, depth: 0, parent: null };
       const p = new Plant('flower', fake, 1, Math.PI / 2, size);
-      p.pin = { x, y, lean }; p.roll = roll; p.seedOff = seedOff; p.u.uSeedOff.value = seedOff;
+      p.pin = { x, y, lean }; p.roll = roll; p.fixedBlur = 1; p.seedOff = seedOff; p.u.uSeedOff.value = seedOff;
       p.update(growth.now, 0); p.outer.updateMatrixWorld(true);
       if (centre) {
         _v.set(0, LOOK7_TARGET_Y, 0).applyMatrix4(p.solidMesh.matrixWorld);
