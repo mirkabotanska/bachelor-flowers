@@ -25,6 +25,9 @@
 //     the flower of "now" is laid on top (like a flash at the end of a long exposure) so it still reads as a
 //     flower. An afterglow (feedback of the previous frames) makes the trails even longer and smoother.
 // Everything has a slider in the panel. Drag to turn the flower, scroll to zoom.
+// Effects (dropdown at the top of the panel): every effect has its own saved settings (its own storage key).
+//  Effect 1 = the look above (long exposure + frosted glass), Effect 2 = the same + a spray of speckles thrown off
+//  by the moving petals (particles.js). More effects: add one to EFFECTS (+ hooks in effectHooks if it draws more).
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
@@ -33,6 +36,7 @@ import { FLOWER_PARAMS, defaults } from '../lily/params.js';
 import { Lily } from '../lily/Lily.js';
 import { generateLily, hsv } from '../lily/generator.js';
 import { uniforms as sharedUniforms, createSolidMaterial } from '../lily/materials.js';
+import { ParticleSpray, PARTICLE_DEFAULTS, PART_COMPOSITE_FRAG, OVER_FRAG, COC_PART_FRAG } from './particles.js';
 import './look.css';
 
 const STORAGE_KEY = 'flowers-web-look-v1';
@@ -133,6 +137,30 @@ const LOOK_DEFAULTS = {
 };
 // motion settings that changed meaning with the long exposure (reset if saved by an older version)
 const MOTION_KEYS = ['Breathing Amount', 'Breath Turn', 'Trail Length (s)', 'Trail Copies', 'Trail Fade'];
+
+// the effects in the dropdown. Each one keeps its own saved settings; startFrom: the first time it is used it
+// starts from the settings of that effect as they are then (after that the two never change each other)
+const EFFECTS = [
+  { id: 'blur', label: 'Effect 1 · Long exposure (blur)', storageKey: STORAGE_KEY, defaults: {} },
+  { id: 'particles', label: 'Effect 2 · Particles (spray)', storageKey: 'flowers-web-look-particles-v1', defaults: PARTICLE_DEFAULTS, startFrom: 'blur', panel: particlePanel },
+];
+const EFFECT_KEY = 'flowers-web-look-effect';
+function particlePanel(gui, params, onChange) {
+  const fp = gui.addFolder('Particles (spray)');
+  fp.add(params, 'Particle Amount', 0, 1, 0.01).name('Amount').onChange(onChange);
+  fp.add(params, 'Particle Size', 0.2, 4, 0.01).name('Size').onChange(onChange);
+  fp.add(params, 'Particle Size Variation', 0, 1, 0.01).name('Size variation (big drops)').onChange(onChange);
+  fp.add(params, 'Particle Spread', 0, 2, 0.01).name('Spread (how far)').onChange(onChange);
+  fp.add(params, 'Particle Life (s)', 0.2, 5, 0.05).name('How long they stay (s)').onChange(onChange);
+  fp.add(params, 'Particle Drift', 0, 1.5, 0.01).name('Drift').onChange(onChange);
+  fp.add(params, 'Particle Colour From Petals').name('Colour from the petals').onChange(onChange);
+  fp.addColor(params, 'Particle Colour').name('Own colour (if not)').onChange(onChange);
+  fp.add(params, 'Particle Shade', -1, 1, 0.01).name('Lighter ↔ darker').onChange(onChange);
+  fp.add(params, 'Particle Blur', 0, 1.5, 0.01).name('Blur on the particles').onChange(onChange);
+  fp.add(params, 'Particle Trails', 0, 1, 0.01).name('In the trails (long exposure)').onChange(onChange);
+  fp.add(params, 'Petal Dissolve', 0, 1, 0.01).name('Petal edges dissolve').onChange(onChange);
+  fp.add(params, 'Watercolour', 0, 1, 0.01).name('Watercolour petals').onChange(onChange);
+}
 
 const QUAD_VERT = /* glsl */ `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
 
@@ -286,17 +314,29 @@ const FINAL_FRAG = /* glsl */ `
 export function createLookPage() {
   // flower defaults: the web generator's, replaced by the Blender flower as soon as its settings are loaded
   const flowerDefaults = { ...defaults(FLOWER_PARAMS), 'Spot Amount': 0 };
-  const params = { ...flowerDefaults, ...LOOK_DEFAULTS };
-  let stored = {};
-  try {
-    stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-    if (!stored['Motion v2']) for (const k of MOTION_KEYS) delete stored[k];   // saved before the long exposure
-    if (!stored['Blender Lily']) {                                              // saved before the Blender flower
-      for (const k of [...Object.keys(flowerDefaults), 'Open Most', 'Closed Most']) delete stored[k];
-    }
-    Object.assign(params, stored, { 'Motion v2': true, 'Blender Lily': true });
-  } catch { /* no storage */ }
-  const save = () => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(params)); } catch { /* ignore */ } };
+  // every effect: its own settings, saved under its own key
+  const paramsById = {}, storedById = {};
+  for (const e of EFFECTS) {
+    const p = { ...flowerDefaults, ...LOOK_DEFAULTS, ...e.defaults };
+    let stored = {};
+    try {
+      const raw = localStorage.getItem(e.storageKey);
+      if (raw === null && e.startFrom) {                 // first time: start from the other effect, as it is now
+        stored = { ...storedById[e.startFrom] };
+        localStorage.setItem(e.storageKey, JSON.stringify(stored));
+      } else stored = JSON.parse(raw || '{}');
+      if (!stored['Motion v2']) for (const k of MOTION_KEYS) delete stored[k];   // saved before the long exposure
+      if (!stored['Blender Lily']) {                                              // saved before the Blender flower
+        for (const k of [...Object.keys(flowerDefaults), 'Open Most', 'Closed Most']) delete stored[k];
+      }
+      Object.assign(p, stored, { 'Motion v2': true, 'Blender Lily': true });
+    } catch { /* no storage */ }
+    paramsById[e.id] = p; storedById[e.id] = stored;
+  }
+  let fx = EFFECTS[0];
+  try { fx = EFFECTS.find((e) => e.id === localStorage.getItem(EFFECT_KEY)) ?? EFFECTS[0]; } catch { /* no storage */ }
+  let params = paramsById[fx.id];                      // the settings of the effect shown now
+  const save = () => { try { localStorage.setItem(fx.storageKey, JSON.stringify(params)); } catch { /* ignore */ } };
 
   const page = document.createElement('div');
   page.id = 'look-page';
@@ -335,7 +375,7 @@ export function createLookPage() {
     uOpCentre: { value: 0.5 }, uOpEdge: { value: 1 }, uOpBlend: { value: 0.5 },
     uPetalLight: { value: new THREE.Color() }, uPetalDark: { value: new THREE.Color() }, uTone: { value: 0.5 },
     uVarPetal: { value: 0 }, uVarGrad: { value: 0 }, uVarEdge: { value: 0 },
-    uStemCol: { value: new THREE.Color() }, uLeafCol: { value: new THREE.Color() } });
+    uStemCol: { value: new THREE.Color() }, uLeafCol: { value: new THREE.Color() }, uWater: { value: 0 }, uSpeckle: { value: 0 } });
   const lilyParams = { ...params };
   const lily = new Lily(lilyParams, u);
   scene.add(lily);
@@ -352,7 +392,14 @@ export function createLookPage() {
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
           uniform float uEdges, uOpCentre, uOpEdge, uOpBlend, uTone, uVarPetal, uVarGrad, uVarEdge;
-          uniform vec3 uPetalLight, uPetalDark, uStemCol, uLeafCol;`)
+          uniform vec3 uPetalLight, uPetalDark, uStemCol, uLeafCol;
+          uniform float uWater, uSpeckle;                                      // effect 2 only (0 = off)
+          float lkHash(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+          float lkNoise(vec3 p) {
+            vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+            return mix(mix(mix(lkHash(i), lkHash(i + vec3(1, 0, 0)), f.x), mix(lkHash(i + vec3(0, 1, 0)), lkHash(i + vec3(1, 1, 0)), f.x), f.y),
+                       mix(mix(lkHash(i + vec3(0, 0, 1)), lkHash(i + vec3(1, 0, 1)), f.x), mix(lkHash(i + vec3(0, 1, 1)), lkHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+          }`)
         .replace('#include <alphamap_fragment>', `#include <alphamap_fragment>
           ${petals ? 'if (vPart > 0.5) discard;' : 'if (vPart < 0.5) discard;'}
           if (vPart > 0.5 && vPart < 1.5) diffuseColor.rgb = uStemCol;          // stem (and the green base of the head)
@@ -365,6 +412,11 @@ export function createLookPage() {
             m += uVarGrad * (0.5 - vU) * (0.8 + 0.5 * r2);                       // gradient: dark base, light tip
             float rim = smoothstep(0.5, 1.0, max(abs(vV), smoothstep(0.7, 1.0, vU)));
             m += uVarEdge * rim * (r2 > 0.5 ? 0.8 : -0.8);                       // edges: darker on some, lighter on others
+            float wn = 0.0;
+            if (uWater > 0.0) {                                                  // watercolour: darker + lighter blotches
+              wn = lkNoise(vec3(vU * 3.2, vV * 2.4, vSeed * 3.7)) * 0.65 + lkNoise(vec3(vU * 8.0, vV * 6.0, vSeed * 1.3 + 4.0)) * 0.35;
+              m += uWater * (wn - 0.5) * 1.2;
+            }
             // mixed as the eye sees it (not in linear light, where the middle looks almost as light as the light colour)
             vec3 pc = mix(sqrt(uPetalLight), sqrt(uPetalDark), clamp(m, 0.0, 1.0)); pc *= pc;
             // keep the shading of the shared petal material (green throat, midrib), but in these colours
@@ -377,6 +429,17 @@ export function createLookPage() {
             float edge = smoothstep(0.62, 1.0, abs(vV)) + smoothstep(0.82, 1.0, vU);
             float vein = pow(abs(sin(vV * 7.0 * 3.14159)), 24.0) * smoothstep(0.05, 0.3, vU) * 0.5;
             diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * diffuseColor.rgb * 0.55, clamp((edge + vein) * uEdges, 0.0, 1.0));
+            if (uWater > 0.0) {
+              // pigment pools at the edge of a wash (darker rim), lighter, thinner washes inside
+              diffuseColor.rgb *= 1.0 - uWater * 0.3 * smoothstep(0.82, 1.0, e) * (0.6 + 0.8 * wn);
+              diffuseColor.a *= 1.0 - uWater * 0.35 * smoothstep(0.55, 0.85, wn) * (1.0 - e);
+            }
+            if (uSpeckle > 0.0) {
+              // edges + tip break up into speckles (more while it moves): fine noise cut by a rising threshold
+              float sp = lkNoise(vec3(vU * 70.0, vV * 26.0, vSeed * 13.0)) * 0.7 + lkNoise(vec3(vU * 160.0, vV * 60.0, vSeed * 5.0)) * 0.3;
+              float cut = smoothstep(0.6, 1.0, e) * uSpeckle * 0.85;
+              diffuseColor.a *= smoothstep(cut - 0.06, cut + 0.06, sp);
+            }
           }`);
     };
     mat.customProgramCacheKey = () => (petals ? 'look-petals' : 'look-solid');
@@ -451,6 +514,7 @@ export function createLookPage() {
     lily.solidMat.opacity = 1;                               // stem, leaves, stamens: solid
     petalMat.opacity = params['Petal Opacity'];              // petals: overall opacity (times the middle / edge opacity)
     u.uMAxis.value.set(0, Math.cos(lilyParams['Head Tilt']), Math.sin(lilyParams['Head Tilt']));   // where the head looks
+    collectPetalPoints();
     dirty = true;
   }
 
@@ -461,6 +525,7 @@ export function createLookPage() {
     return t;
   };
   let velRT, velB, velTmp, streakRT, sceneRT, subRT, trailRT, glowA, glowB, colorRT, cocRT, b1, b2, b3, tmp1, tmp2, tmp3, cocB, cocTmp, bsA, bsB;
+  let partRT, partMixRT;                               // effect 2: the speckles (with depth), and the flower + speckles
   const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
   const quadScene = new THREE.Scene(); quadScene.add(quad);
   const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -493,7 +558,8 @@ export function createLookPage() {
     renderer.setSize(W, H, false);
     camera.aspect = W / H; camera.updateProjectionMatrix();
     const pr = renderer.getPixelRatio(), w = Math.round(W * pr), h = Math.round(H * pr);
-    for (const t of [velRT, velB, velTmp, streakRT, sceneRT, subRT, trailRT, glowA, glowB, colorRT, cocRT, b1, b2, b3, tmp1, tmp2, tmp3, cocB, cocTmp, bsA, bsB]) t?.dispose();
+    for (const t of [velRT, velB, velTmp, streakRT, sceneRT, subRT, trailRT, glowA, glowB, colorRT, cocRT, b1, b2, b3, tmp1, tmp2, tmp3, cocB, cocTmp, bsA, bsB, partRT, partMixRT]) t?.dispose();
+    partRT = rt(w, h, true); partMixRT = rt(w, h);
     sceneRT = rt(w, h, true); colorRT = rt(w, h); cocRT = rt(w, h);
     subRT = rt(w >> 1, h >> 1, true); trailRT = rt(w >> 1, h >> 1);           // the trail copies: half size is plenty
     glowA = rt(w >> 1, h >> 1); glowB = rt(w >> 1, h >> 1); glowFresh = true;
@@ -517,6 +583,124 @@ export function createLookPage() {
     lily.mesh.visible = true; petalMat.colorWrite = true; petalMat.depthWrite = false;
   }
 
+  // ---------------------------------------------------------------- effect 2: the spray of speckles
+  const spray = new ParticleSpray();
+  const sprayCompositeMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: PART_COMPOSITE_FRAG, uniforms: {
+    tBase: { value: null }, tPart: { value: null }, tPartDepth: { value: null }, tFlowerDepth: { value: null }, tNow: { value: null } } });
+  const overMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: OVER_FRAG, uniforms: { tInput: { value: null }, uWeight: { value: 1 } },
+    blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor, blendSrcAlpha: THREE.OneFactor,
+    blendDstAlpha: THREE.OneMinusSrcAlphaFactor, depthTest: false, depthWrite: false, transparent: true });
+  const cocPartMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: COC_PART_FRAG, uniforms: {
+    ...THREE.UniformsUtils.clone(cocMat.uniforms), tPart: { value: null }, tPartDepth: { value: null }, uPartBlur: { value: 1 } } });
+  // the petal points the speckles come from: every petal vertex, edges + tips more often (they move most)
+  let petalIdx = new Int32Array(0), petalW = new Float32Array(0);
+  function collectPetalPoints() {
+    const g = lily.geometry, part = g.attributes.aPart, au = g.attributes.aU, av = g.attributes.aV;
+    if (!part || !au || !av) { petalIdx = new Int32Array(0); return; }
+    const idx = [], w = [];
+    for (let i = 0; i < part.count; i++) {
+      if (part.getX(i) > 0.5) continue;
+      const pu = au.getX(i), pv = Math.abs(av.getX(i));
+      idx.push(i); w.push(0.2 + 0.8 * Math.max(pu ** 1.5, THREE.MathUtils.smoothstep(pv, 0.55, 1)));
+    }
+    petalIdx = Int32Array.from(idx); petalW = Float32Array.from(w);
+  }
+  // where a petal point is at moment t, in world space: the same movement as the shader (lookMove, s = 1)
+  const _q = new THREE.Quaternion(), _e = new THREE.Euler(), _X = new THREE.Vector3(1, 0, 0), _Z = new THREE.Vector3(0, 0, 1);
+  const F0 = { mat: new THREE.Matrix4() }, F1 = { mat: new THREE.Matrix4() };
+  function frameAt(t, F) {                             // what is the same for all points at moment t
+    const x = Math.min(1, Math.max(0, opennessAt(t))) * (ARC_STEPS - 1), i = Math.min(Math.floor(x), ARC_STEPS - 2);
+    F.a = arcTarget(i); F.b = arcTarget(i + 1); F.f = x - i;
+    const m = motionVals(t);
+    F.ph = m.ph; F.twist = m.twist; F.sx = m.sway.x; F.sy = m.sway.y;
+    F.mat.compose(lily.position, _q.setFromEuler(_e.set(lily.rotation.x, m.turn, lily.rotation.z)), lily.scale);
+  }
+  const _pn = new THREE.Vector3();
+  function pointAt(idx, F, out) {
+    const k = idx * 3, { a, b, f } = F, g = lily.geometry;
+    if (a.length !== b.length || k + 2 >= a.length) return false;
+    out.set(a[k] + (b[k] - a[k]) * f, a[k + 1] + (b[k + 1] - a[k + 1]) * f, a[k + 2] + (b[k + 2] - a[k + 2]) * f);
+    const pu = g.attributes.aU.getX(idx), seed = g.attributes.aSeed.getX(idx);
+    _pn.fromBufferAttribute(g.attributes.normal, idx);
+    out.addScaledVector(_pn, pu * pu * u.uMFlutter.value * (Math.sin(F.ph + seed * 5.31) + 0.5 * Math.sin(2 * F.ph + seed * 11.7)));
+    out.applyAxisAngle(u.uMAxis.value, F.twist * Math.pow(pu, 1.5));
+    const foot = u.uMFoot.value;
+    let h = Math.min(1.4, Math.max(0, (out.y - foot) / -foot)); h *= h;
+    out.y -= foot; out.applyAxisAngle(_Z, F.sx * h).applyAxisAngle(_X, F.sy * h); out.y += foot;
+    out.applyMatrix4(F.mat);
+    return true;
+  }
+  // new speckles: random petal points, each one kept with a chance that grows with how fast it moves
+  const SPEED_REF = 1.6;                               // world units / s that count as "moving fast"
+  const _p0 = new THREE.Vector3(), _p1 = new THREE.Vector3(), _vel = [0, 0, 0], _pos = [0, 0, 0];
+  function emitSpray(t, dt) {
+    if (!params['Breathing'] || !petalIdx.length || dt <= 0 || !lily.geometry.attributes.aSeed) return;
+    const hs = 1 / 30, P = params;
+    frameAt(t, F1); frameAt(t - hs, F0);
+    const tries = Math.min(40000, Math.round(P['Particle Amount'] * 200000 * dt));
+    const g = lily.geometry, au = g.attributes.aU, av = g.attributes.aV, as = g.attributes.aSeed;
+    for (let c = 0; c < tries; c++) {
+      const j = (Math.random() * petalIdx.length) | 0;
+      if (Math.random() > petalW[j]) continue;
+      const idx = petalIdx[j];
+      if (!pointAt(idx, F1, _p1) || !pointAt(idx, F0, _p0)) return;
+      _vel[0] = (_p1.x - _p0.x) / hs; _vel[1] = (_p1.y - _p0.y) / hs; _vel[2] = (_p1.z - _p0.z) / hs;
+      const speed = Math.hypot(_vel[0], _vel[1], _vel[2]);
+      if (Math.random() > Math.min(1, speed / SPEED_REF) ** 1.6) continue;   // still: (almost) none
+      _pos[0] = _p1.x; _pos[1] = _p1.y; _pos[2] = _p1.z;
+      spray.emit(_pos, _vel, dt, as.getX(idx), au.getX(idx), av.getX(idx), P);
+    }
+  }
+  // how much the flower moves now (0 = still at fully open / closed ... 1 = fastest part of the breath)
+  function moveLevel(t) {
+    if (!params['Breathing']) return 0;
+    const span = Math.abs(params['Open Most'] - params['Closed Most']), tmin = Math.min(params['Breath In (s)'], params['Breath Out (s)']);
+    const speed = Math.abs(openAt(t) - openAt(t - 0.05)) / 0.05;
+    return Math.min(1, speed / (Math.PI / (2 * tmin))) * Math.min(1, span * 2);
+  }
+  // what each effect adds to the frame (Effect 1 adds nothing: it is the look exactly as it was)
+  const effectHooks = {
+    blur: {},
+    particles: {
+      begin(t, dt) {                                   // petals + spray of now, drawn into partRT (with depth)
+        const P = params, lvl = moveLevel(t);
+        u.uWater.value = P['Watercolour'];
+        u.uSpeckle.value = P['Petal Dissolve'] * (0.15 + 0.85 * lvl);
+        emitSpray(t, dt);
+        spray.step(dt, t, P);
+        const su = spray.uniforms, pr = renderer.getPixelRatio(), hpx = H * pr / 1000;
+        const camDist = camera.position.distanceTo(controls.target);
+        su.uSize.value = P['Particle Size']; su.uSizeVar.value = P['Particle Size Variation'];
+        su.uPx.value = 2.0 * hpx * camDist; su.uDofPx.value = 9 * hpx * P['Blur Amount']; su.uSpeedPx.value = 3.5 * hpx;
+        su.uFocus.value = camDist + P['Focus Distance']; su.uRange.value = P['Depth Range']; su.uBase.value = P['Base Blur'];
+        su.uBlur.value = P['Particle Blur']; su.uShade.value = P['Particle Shade'];
+        su.uCustom.value = P['Particle Colour From Petals'] ? 0 : 1; su.uCustomCol.value.set(P['Particle Colour']);
+        su.uPetalLight.value.copy(u.uPetalLight.value); su.uPetalDark.value.copy(u.uPetalDark.value);
+        su.uTone.value = u.uTone.value; su.uVarPetal.value = u.uVarPetal.value; su.uVarGrad.value = u.uVarGrad.value; su.uVarEdge.value = u.uVarEdge.value;
+        renderer.setRenderTarget(partRT); renderer.clear();
+        renderer.render(spray.scene, camera);
+      },
+      intoTrail(target) {                              // the speckles join the long exposure: they smear + glow on with it
+        const w = params['Particle Trails'] * Math.min(1, params['Particle Blur']);
+        if (w <= 0) return;
+        overMat.uniforms.tInput.value = partRT.texture; overMat.uniforms.uWeight.value = w;
+        pass(overMat, target);
+      },
+      afterFlower(colorTex) {                          // the speckles of now over the flower (behind petals: hidden)
+        const c = sprayCompositeMat.uniforms;
+        c.tBase.value = colorTex; c.tPart.value = partRT.texture; c.tPartDepth.value = partRT.depthTexture;
+        c.tFlowerDepth.value = sceneRT.depthTexture; c.tNow.value = sceneRT.texture;
+        pass(sprayCompositeMat, partMixRT);
+        return partMixRT.texture;
+      },
+      cocMat() {                                       // the depth blur also uses the depth of the speckles
+        cocPartMat.uniforms.tPart.value = partRT.texture; cocPartMat.uniforms.tPartDepth.value = partRT.depthTexture;
+        cocPartMat.uniforms.uPartBlur.value = params['Particle Blur'];
+        return cocPartMat;
+      },
+    },
+  };
+
   function setColours() {
     u.uPetalLight.value.set(params['Petal Light Colour']); u.uPetalDark.value.set(params['Petal Dark Colour']);
     u.uTone.value = params['Petal Tone']; u.uVarPetal.value = params['Petal Variation'];
@@ -531,6 +715,9 @@ export function createLookPage() {
     const moving = params['Breathing'];
     const L = params['Trail Length (s)'], n = Math.round(params['Trail Copies']);
     const dt = Math.min(Math.max(t - lastT, 0), 0.1); lastT = t;
+    const hk = effectHooks[fx.id] ?? {};
+    u.uWater.value = 0; u.uSpeckle.value = 0;          // effect 2 sets its own
+    hk.begin?.(t, dt);
     if (moving && L > 0 && n > 1) {
       setPoses(opennessAt(t - L), opennessAt(t - L / 2), opennessAt(t));
       const k = params['Trail Fade'] * 3;
@@ -544,6 +731,7 @@ export function createLookPage() {
         addMat.uniforms.tInput.value = subRT.texture; addMat.uniforms.uWeight.value = w[i] / sum;
         pass(addMat, trailRT);
       }
+      hk.intoTrail?.(trailRT);
       let trailTex = trailRT.texture;
       // streaks: motion vectors of the flower (now vs a moment ago), spread around it, then the trail is smeared along them
       if (params['Streaks'] > 0) {
@@ -581,16 +769,18 @@ export function createLookPage() {
       renderNow();
       glowFresh = true;
     }
+    if (hk.afterFlower) colorTex = hk.afterFlower(colorTex);
     // 2. how blurred each pixel should be
     const camDist = camera.position.distanceTo(controls.target);
-    cocMat.uniforms.tColor.value = colorTex; cocMat.uniforms.tDepth.value = sceneRT.depthTexture; cocMat.uniforms.tNow.value = sceneRT.texture;
-    cocMat.uniforms.uTrailSoft.value = params['Trail Softness'];
-    cocMat.uniforms.uNear.value = camera.near; cocMat.uniforms.uFar.value = camera.far;
-    cocMat.uniforms.uFocus.value = camDist + params['Focus Distance'];
-    cocMat.uniforms.uRange.value = params['Depth Range'];
-    cocMat.uniforms.uBase.value = params['Base Blur'];
-    cocMat.uniforms.uBehind.value = params['Only Behind Focus'] ? 1 : 0;
-    pass(cocMat, cocRT);
+    const cm = hk.cocMat?.() ?? cocMat, cu = cm.uniforms;
+    cu.tColor.value = colorTex; cu.tDepth.value = sceneRT.depthTexture; cu.tNow.value = sceneRT.texture;
+    cu.uTrailSoft.value = params['Trail Softness'];
+    cu.uNear.value = camera.near; cu.uFar.value = camera.far;
+    cu.uFocus.value = camDist + params['Focus Distance'];
+    cu.uRange.value = params['Depth Range'];
+    cu.uBase.value = params['Base Blur'];
+    cu.uBehind.value = params['Only Behind Focus'] ? 1 : 0;
+    pass(cm, cocRT);
     blur(cocRT, cocTmp, cocB, 2.0);
     // 3. blur pyramid
     blur({ texture: colorTex }, tmp1, b1, 1.6);
@@ -632,130 +822,144 @@ export function createLookPage() {
   const gui = new GUI({ title: '7 · Lily look' });
   gui.domElement.classList.add('look__gui');
   gui.hide();
-  const onFlower = () => { save(); rebuildLily(); };
-  // these change the generated flowers of the breath (they are made again, one by one, when needed)
-  const onBreathShape = () => { save(); arcCache = new Map(); dirty = true; };
-  const onLook = () => { save(); dirty = true; };
-  const ff = gui.addFolder('Flower');
-  for (const [k, label] of Object.entries(FLOWER_KEYS)) {
-    let range = null;
-    for (const g of Object.values(FLOWER_PARAMS)) if (g[k]) range = g[k];
-    if (!range) continue;
-    const [, min, max, step] = range;
-    ff.add(params, k, min, max, step).name(label).onChange(onFlower);
+  // effect dropdown (always at the top); everything below it belongs to the effect shown and is built again on a switch
+  const fxState = { effect: fx.id };
+  gui.add(fxState, 'effect', Object.fromEntries(EFFECTS.map((e) => [e.label, e.id]))).name('Effect').onChange((id) => {
+    fx = EFFECTS.find((e) => e.id === id) ?? EFFECTS[0];
+    params = paramsById[fx.id];
+    try { localStorage.setItem(EFFECT_KEY, fx.id); } catch { /* ignore */ }
+    spray.clear(); glowFresh = true;
+    buildPanel(); rebuildLily();
+  });
+  function buildPanel() {
+    for (const c of [...gui.children]) if (c.property !== 'effect') c.destroy();
+    fx.panel?.(gui, params, () => { save(); dirty = true; });
+    const onFlower = () => { save(); rebuildLily(); };
+    // these change the generated flowers of the breath (they are made again, one by one, when needed)
+    const onBreathShape = () => { save(); arcCache = new Map(); dirty = true; };
+    const onLook = () => { save(); dirty = true; };
+    const ff = gui.addFolder('Flower');
+    for (const [k, label] of Object.entries(FLOWER_KEYS)) {
+      let range = null;
+      for (const g of Object.values(FLOWER_PARAMS)) if (g[k]) range = g[k];
+      if (!range) continue;
+      const [, min, max, step] = range;
+      ff.add(params, k, min, max, step).name(label).onChange(onFlower);
+    }
+    // the colour sliders set both petal colours at once (a lighter and a darker version of that colour)
+    const linHex = (rgb) => `#${new THREE.Color().setRGB(...rgb, THREE.LinearSRGBColorSpace).getHexString()}`;
+    const onBlossom = () => {
+      const h = params['Blossom Hue'], sat = params['Blossom Saturation'], v = params['Blossom Value'];
+      params['Petal Light Colour'] = linHex(hsv(h, sat * 0.4, Math.min(1, v * 1.3)));
+      params['Petal Dark Colour'] = linHex(hsv(h + 0.01, Math.min(1, sat * 1.2), v * 0.4));
+      gui.controllersRecursive().forEach((c) => c.updateDisplay());
+      save(); Object.assign(lilyParams, params); lily.updateColour(); dirty = true;
+    };
+    ff.add(params, 'Blossom Hue', 0, 1, 0.005).name('Colour (hue)').onChange(onBlossom);
+    ff.add(params, 'Blossom Saturation', 0, 1, 0.01).name('Colour (saturation)').onChange(onBlossom);
+    ff.add(params, 'Blossom Value', 0, 1, 0.01).name('Colour (brightness)').onChange(onBlossom);
+    ff.add(params, 'Petal Opacity', 0.2, 1, 0.01).name('Petal opacity').onChange(onFlower);
+    ff.add(params, 'Petal Edges', 0, 1, 0.01).name('Petal edges + veins').onChange(onLook);
+    ff.add(params, 'Petal Centre Opacity', 0, 1, 0.01).name('Petal middle opacity').onChange(onLook);
+    ff.add(params, 'Petal Edge Opacity', 0, 1, 0.01).name('Petal edge opacity').onChange(onLook);
+    ff.add(params, 'Petal Opacity Blend', 0.05, 1, 0.01).name('Middle → edge softness').onChange(onLook);
+    ff.add(params, 'Show Stem + Leaves').name('Stem + leaves').onChange(onFlower);
+
+    const flv = gui.addFolder('Leaves');
+    const flowerRange = (k) => { for (const g of Object.values(FLOWER_PARAMS)) if (g[k]) return g[k].slice(1, 4); return [0, 1, 0.01]; };
+    flv.add(params, 'Leaf Angle', ...flowerRange('Leaf Angle')).name('Angle (still flower)').onChange(onFlower);
+    flv.add(params, 'Leaf Fold', ...flowerRange('Leaf Fold')).name('Fold (still flower)').onChange(onFlower);
+    flv.add(params, 'Leaf Droop', ...flowerRange('Leaf Droop')).name('Droop').onChange(onFlower);
+    flv.add(params, 'Leaf Twist', ...flowerRange('Leaf Twist')).name('Twist').onChange(onFlower);
+    flv.add(params, 'Leaf Angle Closed', 0, 150, 0.5).name('Breath: angle closed (°)').onChange(onBreathShape);
+    flv.add(params, 'Leaf Angle Open', 0, 150, 0.5).name('Breath: angle open (°)').onChange(onBreathShape);
+    flv.add(params, 'Leaf Fold Closed', -1, 1, 0.01).name('Breath: fold closed').onChange(onBreathShape);
+    flv.add(params, 'Leaf Fold Open', -1, 1, 0.01).name('Breath: fold open').onChange(onBreathShape);
+    flv.add(params, 'Leaf Droop Breath', 0, 1, 0.01).name('Breath: less droop closed').onChange(onBreathShape);
+
+    const fc = gui.addFolder('Petal + stem colours');
+    fc.addColor(params, 'Petal Light Colour').name('Light petal colour').onChange(onLook);
+    fc.addColor(params, 'Petal Dark Colour').name('Dark petal colour').onChange(onLook);
+    fc.add(params, 'Petal Tone', 0, 1, 0.01).name('Light ↔ dark').onChange(onLook);
+    fc.add(params, 'Petal Variation', 0, 1, 0.01).name('Between petals (same → mixed)').onChange(onLook);
+    fc.add(params, 'Petal Gradient', 0, 1.5, 0.01).name('Gradient (dark base → light tip)').onChange(onLook);
+    fc.add(params, 'Petal Edge Variation', 0, 1, 0.01).name('Edges (some dark, some light)').onChange(onLook);
+    fc.addColor(params, 'Stem Colour').name('Stem colour').onChange(onLook);
+    fc.addColor(params, 'Leaf Colour').name('Leaf colour').onChange(onLook);
+
+    const fb = gui.addFolder('Blur (frosted glass)');
+    fb.add(params, 'Blur Amount', 0, 1.5, 0.01).name('Blur amount').onChange(onLook);
+    fb.add(params, 'Base Blur', 0, 1, 0.01).name('Blur everywhere').onChange(onLook);
+    fb.add(params, 'Focus Distance', -3, 3, 0.01).name('Sharp at (- near, + far)').onChange(onLook);
+    fb.add(params, 'Depth Range', 0.2, 5, 0.01).name('Depth to full blur').onChange(onLook);
+    fb.add(params, 'Only Behind Focus').name('Only blur behind').onChange(onLook);
+    fb.add(params, 'Frost (paleness)', 0, 1, 0.01).name('Paler when blurred').onChange(onLook);
+
+    const fs = gui.addFolder('Background shadow');
+    fs.add(params, 'Bg Shadow').name('Shadow on/off').onChange(onLook);
+    fs.addColor(params, 'Bg Shadow Colour').name('Colour (lighter/darker than bg)').onChange(onLook);
+    fs.add(params, 'Bg Shadow Blur', 0, 1, 0.01).name('Blur').onChange(onLook);
+    fs.add(params, 'Bg Shadow Opacity', 0, 1, 0.01).name('Opacity').onChange(onLook);
+    fs.add(params, 'Bg Shadow Offset X', -0.5, 0.5, 0.005).name('Offset (- left, + right)').onChange(onLook);
+    fs.add(params, 'Bg Shadow Offset Y', -0.5, 0.5, 0.005).name('Offset (- down, + up)').onChange(onLook);
+    fs.add(params, 'Bg Shadow Size', 0.5, 3, 0.01).name('Size').onChange(onLook);
+
+    const fl = gui.addFolder('Colour');
+    fl.addColor(params, 'Background Top').name('Background top').onChange(onLook);
+    fl.addColor(params, 'Background Bottom').name('Background bottom').onChange(onLook);
+    fl.add(params, 'Exposure', 0.3, 2, 0.01).onChange(onLook);
+    fl.add(params, 'Contrast', 0.4, 1.6, 0.01).onChange(onLook);
+    fl.add(params, 'Saturation', 0, 2, 0.01).onChange(onLook);
+    fl.add(params, 'Warmth', -1, 1, 0.01).onChange(onLook);
+    fl.add(params, 'Fade', 0, 0.4, 0.005).name('Fade (lift blacks)').onChange(onLook);
+    fl.addColor(params, 'Shadow Tint').name('Shadow colour').onChange(onLook);
+    fl.add(params, 'Shadow Tint Amount', 0, 1, 0.01).name('Shadow colour amount').onChange(onLook);
+    fl.addColor(params, 'Highlight Tint').name('Highlight colour').onChange(onLook);
+    fl.add(params, 'Highlight Tint Amount', 0, 1, 0.01).name('Highlight colour amount').onChange(onLook);
+    fl.add(params, 'Glow', 0, 1.5, 0.01).onChange(onLook);
+
+    const fbr = gui.addFolder('Breathing');
+    fbr.add(params, 'Breathing').name('Breathe (open + close)').onChange((v) => { save(); if (!v) rebuildLily(); dirty = true; });
+    fbr.add(params, 'Breath In (s)', 1, 10, 0.1).name('Breath in (opens), s').onChange(onLook);
+    fbr.add(params, 'Breath Out (s)', 1, 10, 0.1).name('Breath out (closes), s').onChange(onLook);
+    fbr.add(params, 'Open Most', 0, 1, 0.01).name('Most open (1 = fully)').onChange(onBreathShape);
+    fbr.add(params, 'Closed Most', 0, 1, 0.01).name('Most closed (0 = bud)').onChange(onBreathShape);
+    fbr.add(params, 'Breath Turn', 0, 120, 0.5).name('Turn with the breath (°)').onChange(onLook);
+    fbr.add(params, 'Sway', 0, 25, 0.1).name('Sway on the stem (°)').onChange(onLook);
+    fbr.add(params, 'Petal Lag', 0, 3, 0.01).name('Petal tips lag (swirl)').onChange(onLook);
+    fbr.add(params, 'Petal Flutter', 0, 0.3, 0.001).name('Petals flutter').onChange(onLook);
+    const fm = gui.addFolder('Long exposure (motion trails)');
+    fm.add(params, 'Trail Length (s)', 0, 3, 0.01).name('Exposure time (s, 0 = off)').onChange(onLook);
+    fm.add(params, 'Trail Copies', 2, 48, 1).name('Copies (smoother = slower)').onChange(onLook);
+    fm.add(params, 'Trail Fade', 0, 1, 0.01).name('Trail fade (0 = even)').onChange(onLook);
+    fm.add(params, 'Now Strength', 0, 1, 0.01).name('Flower of now (solid)').onChange(onLook);
+    fm.add(params, 'Trail Softness', 0, 1, 0.01).name('Trail softness').onChange(onLook);
+    fm.add(params, 'Streaks', 0, 3, 0.01).name('Streaks (smear along motion)').onChange(onLook);
+    fm.add(params, 'Afterglow', 0, 0.97, 0.01).name('Afterglow (longer trails)').onChange(onLook);
+
+    const actions = {
+      'Reset view': () => { resetView(); dirty = true; },
+      'Save image (PNG)': () => {
+        render();
+        const a = document.createElement('a');
+        a.download = `lily-look-${Date.now()}.png`; a.href = canvas.toDataURL('image/png'); a.click();
+      },
+      'Copy settings (JSON)': async () => { try { await navigator.clipboard.writeText(JSON.stringify(params, null, 2)); } catch { console.log(JSON.stringify(params, null, 2)); } },
+      'Reset settings': () => {
+        Object.assign(params, flowerDefaults, LOOK_DEFAULTS, fx.defaults);
+        save(); gui.controllersRecursive().forEach((c) => c.updateDisplay()); rebuildLily();
+      },
+    };
+    for (const k of Object.keys(actions)) gui.add(actions, k);
   }
-  // the colour sliders set both petal colours at once (a lighter and a darker version of that colour)
-  const linHex = (rgb) => `#${new THREE.Color().setRGB(...rgb, THREE.LinearSRGBColorSpace).getHexString()}`;
-  const onBlossom = () => {
-    const h = params['Blossom Hue'], sat = params['Blossom Saturation'], v = params['Blossom Value'];
-    params['Petal Light Colour'] = linHex(hsv(h, sat * 0.4, Math.min(1, v * 1.3)));
-    params['Petal Dark Colour'] = linHex(hsv(h + 0.01, Math.min(1, sat * 1.2), v * 0.4));
-    gui.controllersRecursive().forEach((c) => c.updateDisplay());
-    save(); Object.assign(lilyParams, params); lily.updateColour(); dirty = true;
-  };
-  ff.add(params, 'Blossom Hue', 0, 1, 0.005).name('Colour (hue)').onChange(onBlossom);
-  ff.add(params, 'Blossom Saturation', 0, 1, 0.01).name('Colour (saturation)').onChange(onBlossom);
-  ff.add(params, 'Blossom Value', 0, 1, 0.01).name('Colour (brightness)').onChange(onBlossom);
-  ff.add(params, 'Petal Opacity', 0.2, 1, 0.01).name('Petal opacity').onChange(onFlower);
-  ff.add(params, 'Petal Edges', 0, 1, 0.01).name('Petal edges + veins').onChange(onLook);
-  ff.add(params, 'Petal Centre Opacity', 0, 1, 0.01).name('Petal middle opacity').onChange(onLook);
-  ff.add(params, 'Petal Edge Opacity', 0, 1, 0.01).name('Petal edge opacity').onChange(onLook);
-  ff.add(params, 'Petal Opacity Blend', 0.05, 1, 0.01).name('Middle → edge softness').onChange(onLook);
-  ff.add(params, 'Show Stem + Leaves').name('Stem + leaves').onChange(onFlower);
-
-  const flv = gui.addFolder('Leaves');
-  const flowerRange = (k) => { for (const g of Object.values(FLOWER_PARAMS)) if (g[k]) return g[k].slice(1, 4); return [0, 1, 0.01]; };
-  flv.add(params, 'Leaf Angle', ...flowerRange('Leaf Angle')).name('Angle (still flower)').onChange(onFlower);
-  flv.add(params, 'Leaf Fold', ...flowerRange('Leaf Fold')).name('Fold (still flower)').onChange(onFlower);
-  flv.add(params, 'Leaf Droop', ...flowerRange('Leaf Droop')).name('Droop').onChange(onFlower);
-  flv.add(params, 'Leaf Twist', ...flowerRange('Leaf Twist')).name('Twist').onChange(onFlower);
-  flv.add(params, 'Leaf Angle Closed', 0, 150, 0.5).name('Breath: angle closed (°)').onChange(onBreathShape);
-  flv.add(params, 'Leaf Angle Open', 0, 150, 0.5).name('Breath: angle open (°)').onChange(onBreathShape);
-  flv.add(params, 'Leaf Fold Closed', -1, 1, 0.01).name('Breath: fold closed').onChange(onBreathShape);
-  flv.add(params, 'Leaf Fold Open', -1, 1, 0.01).name('Breath: fold open').onChange(onBreathShape);
-  flv.add(params, 'Leaf Droop Breath', 0, 1, 0.01).name('Breath: less droop closed').onChange(onBreathShape);
-
-  const fc = gui.addFolder('Petal + stem colours');
-  fc.addColor(params, 'Petal Light Colour').name('Light petal colour').onChange(onLook);
-  fc.addColor(params, 'Petal Dark Colour').name('Dark petal colour').onChange(onLook);
-  fc.add(params, 'Petal Tone', 0, 1, 0.01).name('Light ↔ dark').onChange(onLook);
-  fc.add(params, 'Petal Variation', 0, 1, 0.01).name('Between petals (same → mixed)').onChange(onLook);
-  fc.add(params, 'Petal Gradient', 0, 1.5, 0.01).name('Gradient (dark base → light tip)').onChange(onLook);
-  fc.add(params, 'Petal Edge Variation', 0, 1, 0.01).name('Edges (some dark, some light)').onChange(onLook);
-  fc.addColor(params, 'Stem Colour').name('Stem colour').onChange(onLook);
-  fc.addColor(params, 'Leaf Colour').name('Leaf colour').onChange(onLook);
-
-  const fb = gui.addFolder('Blur (frosted glass)');
-  fb.add(params, 'Blur Amount', 0, 1.5, 0.01).name('Blur amount').onChange(onLook);
-  fb.add(params, 'Base Blur', 0, 1, 0.01).name('Blur everywhere').onChange(onLook);
-  fb.add(params, 'Focus Distance', -3, 3, 0.01).name('Sharp at (- near, + far)').onChange(onLook);
-  fb.add(params, 'Depth Range', 0.2, 5, 0.01).name('Depth to full blur').onChange(onLook);
-  fb.add(params, 'Only Behind Focus').name('Only blur behind').onChange(onLook);
-  fb.add(params, 'Frost (paleness)', 0, 1, 0.01).name('Paler when blurred').onChange(onLook);
-
-  const fs = gui.addFolder('Background shadow');
-  fs.add(params, 'Bg Shadow').name('Shadow on/off').onChange(onLook);
-  fs.addColor(params, 'Bg Shadow Colour').name('Colour (lighter/darker than bg)').onChange(onLook);
-  fs.add(params, 'Bg Shadow Blur', 0, 1, 0.01).name('Blur').onChange(onLook);
-  fs.add(params, 'Bg Shadow Opacity', 0, 1, 0.01).name('Opacity').onChange(onLook);
-  fs.add(params, 'Bg Shadow Offset X', -0.5, 0.5, 0.005).name('Offset (- left, + right)').onChange(onLook);
-  fs.add(params, 'Bg Shadow Offset Y', -0.5, 0.5, 0.005).name('Offset (- down, + up)').onChange(onLook);
-  fs.add(params, 'Bg Shadow Size', 0.5, 3, 0.01).name('Size').onChange(onLook);
-
-  const fl = gui.addFolder('Colour');
-  fl.addColor(params, 'Background Top').name('Background top').onChange(onLook);
-  fl.addColor(params, 'Background Bottom').name('Background bottom').onChange(onLook);
-  fl.add(params, 'Exposure', 0.3, 2, 0.01).onChange(onLook);
-  fl.add(params, 'Contrast', 0.4, 1.6, 0.01).onChange(onLook);
-  fl.add(params, 'Saturation', 0, 2, 0.01).onChange(onLook);
-  fl.add(params, 'Warmth', -1, 1, 0.01).onChange(onLook);
-  fl.add(params, 'Fade', 0, 0.4, 0.005).name('Fade (lift blacks)').onChange(onLook);
-  fl.addColor(params, 'Shadow Tint').name('Shadow colour').onChange(onLook);
-  fl.add(params, 'Shadow Tint Amount', 0, 1, 0.01).name('Shadow colour amount').onChange(onLook);
-  fl.addColor(params, 'Highlight Tint').name('Highlight colour').onChange(onLook);
-  fl.add(params, 'Highlight Tint Amount', 0, 1, 0.01).name('Highlight colour amount').onChange(onLook);
-  fl.add(params, 'Glow', 0, 1.5, 0.01).onChange(onLook);
-
-  const fbr = gui.addFolder('Breathing');
-  fbr.add(params, 'Breathing').name('Breathe (open + close)').onChange((v) => { save(); if (!v) rebuildLily(); dirty = true; });
-  fbr.add(params, 'Breath In (s)', 1, 10, 0.1).name('Breath in (opens), s').onChange(onLook);
-  fbr.add(params, 'Breath Out (s)', 1, 10, 0.1).name('Breath out (closes), s').onChange(onLook);
-  fbr.add(params, 'Open Most', 0, 1, 0.01).name('Most open (1 = fully)').onChange(onBreathShape);
-  fbr.add(params, 'Closed Most', 0, 1, 0.01).name('Most closed (0 = bud)').onChange(onBreathShape);
-  fbr.add(params, 'Breath Turn', 0, 120, 0.5).name('Turn with the breath (°)').onChange(onLook);
-  fbr.add(params, 'Sway', 0, 25, 0.1).name('Sway on the stem (°)').onChange(onLook);
-  fbr.add(params, 'Petal Lag', 0, 3, 0.01).name('Petal tips lag (swirl)').onChange(onLook);
-  fbr.add(params, 'Petal Flutter', 0, 0.3, 0.001).name('Petals flutter').onChange(onLook);
-  const fm = gui.addFolder('Long exposure (motion trails)');
-  fm.add(params, 'Trail Length (s)', 0, 3, 0.01).name('Exposure time (s, 0 = off)').onChange(onLook);
-  fm.add(params, 'Trail Copies', 2, 48, 1).name('Copies (smoother = slower)').onChange(onLook);
-  fm.add(params, 'Trail Fade', 0, 1, 0.01).name('Trail fade (0 = even)').onChange(onLook);
-  fm.add(params, 'Now Strength', 0, 1, 0.01).name('Flower of now (solid)').onChange(onLook);
-  fm.add(params, 'Trail Softness', 0, 1, 0.01).name('Trail softness').onChange(onLook);
-  fm.add(params, 'Streaks', 0, 3, 0.01).name('Streaks (smear along motion)').onChange(onLook);
-  fm.add(params, 'Afterglow', 0, 0.97, 0.01).name('Afterglow (longer trails)').onChange(onLook);
-
-  const actions = {
-    'Reset view': () => { resetView(); dirty = true; },
-    'Save image (PNG)': () => {
-      render();
-      const a = document.createElement('a');
-      a.download = `lily-look-${Date.now()}.png`; a.href = canvas.toDataURL('image/png'); a.click();
-    },
-    'Copy settings (JSON)': async () => { try { await navigator.clipboard.writeText(JSON.stringify(params, null, 2)); } catch { console.log(JSON.stringify(params, null, 2)); } },
-    'Reset settings': () => {
-      Object.assign(params, flowerDefaults, LOOK_DEFAULTS);
-      save(); gui.controllersRecursive().forEach((c) => c.updateDisplay()); rebuildLily();
-    },
-  };
-  for (const k of Object.keys(actions)) gui.add(actions, k);
+  buildPanel();
 
   // the Blender flower: its settings become the flower defaults (settings changed on this page and saved stay)
   fetch(BLENDER_LILY_URL).then((r) => r.json()).then((j) => {
     for (const [k, v] of Object.entries(j.settings ?? {})) {
       if (!(k in flowerDefaults) || typeof v !== 'number') continue;
       flowerDefaults[k] = v;
-      if (!(k in stored)) params[k] = v;
+      for (const e of EFFECTS) if (!(k in storedById[e.id])) paramsById[e.id][k] = v;
     }
     gui.controllersRecursive().forEach((c) => c.updateDisplay());
     rebuildLily();

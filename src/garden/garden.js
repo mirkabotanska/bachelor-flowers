@@ -1,12 +1,15 @@
 // Page 8 – Garden, with versions. A dropdown at the top of the panel switches between them, live.
 //  v1/ = Version 1: the garden exactly as it was (frozen: don't change these files, so you can always go back to it)
 //  v2/ = Version 2: where changes are tried (its own copy of every file, so changing it never changes Version 1)
+//  v3/ = Version 3: a copy of Version 1 with smoother root growth, fewer side branches, flowers that appear with
+//        their root and one shared breath for all flowers
 // Each version keeps its own saved settings. A version is only built the first time it is opened.
 import { createGardenPage as createV1 } from './v1/garden.js';
 import { createGardenPage as createV2 } from './v2/garden.js';
+import { createGardenPage as createV3 } from './v3/garden.js';
 
 const VERSION_KEY = 'flowers-web-garden-version';
-const VERSIONS = { 'Version 1 (frozen)': createV1, 'Version 2': createV2 };
+const VERSIONS = { 'Version 1 (frozen)': createV1, 'Version 2': createV2, 'Version 3': createV3 };
 
 export function createGardenPage() {
   let current = 'Version 1 (frozen)';
