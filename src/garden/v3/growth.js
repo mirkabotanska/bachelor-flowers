@@ -6,6 +6,9 @@
 // Version 3: smooth growth (the tip moves continuously between steps, the turning is low-pass filtered, roots
 // ease in and out instead of starting / stopping at full speed), fewer side branches (live.branches), and
 // flowerRoot(): a short root that grows on purpose to carry a flower.
+// Growth only near the light: every root has a vigour (0..1). Near a light it is 1; once no light is near its tip
+// it runs down to 0 over live.linger seconds, and the root slows down and settles (it grows on if a light comes
+// back). Branches start with the vigour of the root they grow from. The page does the same for flowers / leaves.
 export const STEP_LENGTH = 6;
 
 export function createGrowth(width, height) {
@@ -16,6 +19,7 @@ export function createGrowth(width, height) {
     spread: 1,          // how far the particles fly (x)
     branches: 0.65,     // side branches (x): 1 = as many as Version 1, 0 = none
     smoothness: 0.7,    // 0 = the wobbly turning of Version 1 ... 1 = long, calm curves
+    linger: 1.5,        // s: how long growth goes on (slowing down) once no light is near any more
   };
   let W = width, H = height;
 
@@ -149,6 +153,7 @@ export function createGrowth(width, height) {
       stepsUntilSplit: randomStepsUntilSplit(),
       distanceToGrow: 0,
       turn: 0,                                  // the filtered wobble (radians per step)
+      vigor: parent ? parent.vigor ?? 1 : 1,    // how strongly it grows (light near = 1)
       isLit: true, unlitSeconds: 0,
       childLimit: 0, pathSteps: 0,
     };
@@ -387,10 +392,26 @@ export function createGrowth(width, height) {
     const end = Math.min(1, 0.3 + (root.burstSteps - 1 + (STEP_LENGTH - root.distanceToGrow) / STEP_LENGTH) / 4);
     return GROW_SPEED * (1 + (Math.min(start, end) - 1) * s);
   }
-  function getOwnGrowSpeed(root, lights) {
+  // growth only near the light: how near the nearest light is (1 = within GROW_NEAR px, 0 = beyond GROW_FAR px)
+  const GROW_NEAR = 150, GROW_FAR = 280;
+  function nearness(point, lights, point2 = null) {
+    let near = 0;
+    for (const l of lights) {
+      const d = point2 ? Math.min(getDistance(point, l), getDistance(point2, l)) : getDistance(point, l);
+      near = Math.max(near, 1 - smooth((d - GROW_NEAR) / (GROW_FAR - GROW_NEAR)));
+    }
+    return near;
+  }
+  // vigour follows the nearness: up quickly, down over live.linger seconds
+  const settle = (v, near, dt) => (near >= v ? Math.min(near, v + dt * 3) : Math.max(near, v - dt / Math.max(live.linger, 0.05)));
+  function updateVigor(root, lights, dt) {
+    // a root's tip should be near a light; a connector grows while the light is at either of its ends
+    const near = isLeader(root) ? 1 : nearness(root.points.at(-1), lights, root.kind === 'connector' ? root.points[0] : null);
+    root.vigor = settle(root.vigor ?? 1, near, dt);
+  }
+  function getOwnGrowSpeed(root) {
     if (root.burstSteps === 0) return 0;
-    if (root.kind === 'side' || root.kind === 'connector') return easedSpeed(root);
-    return lights.some((light) => getDistance(root.points[0], light) < LIGHT_REACH) ? easedSpeed(root) : 0;
+    return easedSpeed(root) * smooth(root.vigor);       // eases out to a stop as the vigour runs down
   }
 
   function updateRootLight(root, isFollowing, deltaSeconds) {
@@ -571,7 +592,8 @@ export function createGrowth(width, height) {
         if (!roots.includes(root.targetRoot) || root.targetRoot.points.length < 2) { root.targetRoot = null; root.target = null; }
         else { const tp = root.targetRoot.points[Math.min(root.targetIndex, root.targetRoot.points.length - 1)]; root.target = { x: tp.x, y: tp.y }; }
       }
-      const speed = getOwnGrowSpeed(root, lights);
+      updateVigor(root, lights, deltaSeconds);
+      const speed = getOwnGrowSpeed(root);
       if (speed > 0) growRoot(root, speed * deltaSeconds, root.target);
       if (root.target && getDistance(root.points.at(-1), root.target) < STEP_LENGTH * 1.8) {
         root.points.push({ x: root.target.x, y: root.target.y, t: now });   // snap on: the roots really join
@@ -742,7 +764,7 @@ export function createGrowth(width, height) {
     get dirty() { return dirty; },
     clean() { dirty = false; },
     setSize(w, h) { W = w; H = h; },
-    alive, anchorOn, centerOf, widthAt, toneOf, smoothLine, isAtPointLimit,
+    nearness, settle, alive, anchorOn, centerOf, widthAt, toneOf, smoothLine, isAtPointLimit,
     spotAlive, keepRoot, flowerSpots, flowerRoot, growingOn, isLeader,
     startFake, stopFake() { fakeLights = []; },
     // one step: the real lights (mouse / camera, {id, x, y}) plus the fake ones. Returns the events of this step.

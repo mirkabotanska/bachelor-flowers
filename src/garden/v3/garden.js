@@ -5,6 +5,13 @@
 //  - flowers appear with their root: a flower is always put on a root that is growing right then (or on a short
 //    root that grows out to carry it), just behind its tip, and its stem grows out at once
 //  - all flowers (and leaf clusters) breathe on one shared rhythm: a new flower joins the current breath
+//  - growth only near the light: roots, branches, flowers and leaves grow while a light is near them and slow
+//    down and settle within 'Growth after the light leaves' seconds once it has gone (growth.js: vigour)
+//  - the lily is page 7's lily, Effect 1: the garden reads page 7's settings (look7.js) every time it is shown
+//    (flower, petal colours + see-through, breathing, long exposure, blur, background haze, colour grading), and
+//    draws it with the same shader code. What depends on size is measured per lily, in its own size: the depth
+//    blur (focus + depth range, so a small lily is as soft as page 7's lily seen from further away) and its haze
+//    on the wall (scaled around each lily). The roots keep their own blur / haze settings ('Roots: …' folders).
 // The roots of page 5 and the lily + look of page 7, together.
 //  - roots grow where the light is (camera flashlight, mouse, or fake lights), exactly like page 5 (growth.js),
 //    but they are drawn as real 3D tubes in the wall plane (tubes.js): round, lit, thicker at the base, thinner
@@ -31,12 +38,12 @@ import { uniforms as sharedUniforms, createSolidMaterial } from '../../lily/mate
 import { createGrowth } from './growth.js';
 import { createLightInput } from './lights.js';
 import { RootTubes, Particles, waveZ, swayAngle, originPhase, WAVE_PERIOD, SWAY_PERIOD } from './tubes.js';
+import { loadLook7, BLENDER_LILY_URL, LOOK7_TARGET_Y, LOOK7_VIEW_TILT } from './look7.js';
 import '../garden.css';
 
 const STORAGE_KEY = 'flowers-web-garden-v3';
 const V1_STORAGE_KEY = 'flowers-web-garden-v1';   // the first time, Version 3 starts from Version 1's saved settings
 const OWN_DEFAULTS = ['Stem Grow (s)', 'Bud Appear (s)'];   // ...except these, which Version 3 sets differently
-const BLENDER_LILY_URL = `${import.meta.env.BASE_URL}lily/lily-breath.json`;
 const ARC_CLOSED = -0.9, ARC_OPEN = 1.66, ARC_STEPS = 33;   // Petal Arc Bend: closed bud ... fully open (poses blended in between)
 const LEAF_STEPS = 7, LEAF_VARIANTS = 4;                     // leaf clusters on the roots: a few shapes, folding with the breath
 const PX = 80;                        // simulation pixels per world unit
@@ -49,17 +56,11 @@ const LEAF_GROW = 1.8;                // s: a leaf cluster grows out
 const FLOWER_COST = 3;                // energy (seconds of light on a spot) per flower
 const EDGE_MARGIN = 70;               // px: no flowers this close to the edge
 
-// flower settings shown on this page (the rest keep their default)
-const FLOWER_KEYS = {
-  'Ring Count': 'Rings', 'Petals Per Ring': 'Petals per ring', 'Petal Length': 'Petal length', 'Petal Width': 'Petal width',
-  'Petal Tip Shape': 'Petal tip', 'Inner Ring Scale': 'Ring size (inner rings)', 'Inner Ring Opening': 'Ring opening (inner rings)',
-  'Inner Ring Height': 'Space between rings', 'Petal Ring Rotation Offset': 'Ring rotation', 'Flower Blooming': 'Blooming',
-  'Petal Tip Bend': 'Tip bend', 'Petal Edge Ruffle': 'Edge ruffle', 'Head Tilt': 'Head tilt', 'Stamen Count': 'Stamens',
-};
-
+// the garden's own settings (the lily's come from page 7, see look7.js)
 const GARDEN_DEFAULTS = {
   // garden: flowers and leaves on the roots
   'Flower Size': 0.6,
+  'Flower Lean (°)': Math.round(LOOK7_VIEW_TILT * 10) / 10,   // towards the viewer; page 7 sees its lily from this angle
   'Max Flowers': 8,
   'Flower Spacing': 110,        // px between flowers
   'Stem Grow (s)': 1.6,         // the stem (with its leaves) grows out of the root, while the root grows on
@@ -72,6 +73,7 @@ const GARDEN_DEFAULTS = {
   'Root Thickness': 1.5,
   'Side Branches': 0.65,        // 1 = as many side branches as Version 1
   'Growth Smoothness': 0.7,     // 0 = Version 1's wobble, 1 = calm, flowing curves
+  'Growth Linger (s)': 1.5,     // growth goes on this long (slowing down) after the light has left
   'Blur Variation': 0.8,        // how far the roots move towards / away from the glass (depth units)
   'Blur Variation Speed': 0.5,
   'Root Sway': 0.4,             // the slow turn of a cluster around where it started
@@ -80,81 +82,42 @@ const GARDEN_DEFAULTS = {
   'Dissolve Spread': 1,         // how far the particles fly
   'Light Glow': 0.08,           // a soft light on the wall where the light is
   'Threshold': 70,              // camera: how much brighter than the room counts as light
-  // flower extras (page 7)
-  'Show Stem + Leaves': true,
-  'Petal Opacity': 1.0,
-  'Petal Edges': 0.8,
-  'Petal Light Colour': '#f7d3dd',
-  'Petal Dark Colour': '#8c2a4f',
-  'Petal Tone': 0.45,
-  'Petal Variation': 0.85,
-  'Petal Gradient': 0.9,
-  'Petal Edge Variation': 0.6,
-  'Stem Colour': '#619950',
-  'Leaf Colour': '#558e45',
-  'Petal Centre Opacity': 0.5,
-  'Petal Edge Opacity': 0.95,
-  'Petal Opacity Blend': 0.6,
-  // blur (page 7; the garden is in different units, so the depth values are its own)
-  'Blur Amount': 0.6,
-  'Base Blur': 0.03,
-  'Focus Distance': -0.6,       // sharp a little in front of the wall, where the roots come closest (- nearer, + further)
-  'Depth Range': 1.8,
-  'Only Behind Focus': false,
-  'Frost (paleness)': 0.35,
-  // look (page 7)
-  'Background Top': '#b9c0b4',
-  'Background Bottom': '#a7ada2',
-  'Exposure': 1.0,
-  'Contrast': 1.0,
-  'Saturation': 0.8,
-  'Warmth': 0.1,
-  'Fade': 0.04,
-  'Shadow Tint': '#3b4a63',
-  'Shadow Tint Amount': 0.25,
-  'Highlight Tint': '#f6d9c6',
-  'Highlight Tint Amount': 0.2,
-  'Glow': 0.2,
-  'Bg Shadow': true,
-  'Bg Shadow Colour': '#6e766a',
-  'Bg Shadow Blur': 0.75,
-  'Bg Shadow Opacity': 0.35,
-  'Bg Shadow Offset X': 0.02,
-  'Bg Shadow Offset Y': -0.03,
-  'Bg Shadow Size': 1.0,
-  // breathing (page 7)
-  'Breath In (s)': 3,
-  'Breath Out (s)': 3,
-  'Open Most': 1.0,
-  'Closed Most': 0.0,
-  'Leaf Angle Closed': 68,
-  'Leaf Angle Open': 38,
-  'Leaf Fold Closed': 1.0,
-  'Leaf Fold Open': 0.6,
-  'Leaf Droop Breath': 0.3,
-  'Breath Turn': 50,
-  'Sway': 8,
-  'Petal Lag': 2.0,
-  'Petal Flutter': 0.12,
-  // long exposure (page 7)
-  'Trail Length (s)': 1.5,
-  'Trail Copies': 24,
-  'Trail Fade': 0.35,
-  'Now Strength': 0.35,
-  'Trail Softness': 0.15,
-  'Afterglow': 0.88,
-  'Streaks': 2.0,
+  // roots: blur (frosted glass), in the garden's units
+  'Root Blur Amount': 0.6,
+  'Root Base Blur': 0.03,
+  'Root Focus Distance': -0.6,  // sharp a little in front of the wall, where the roots come closest (- nearer, + further)
+  'Root Depth Range': 1.8,
+  'Root Only Behind Focus': false,
+  'Root Frost': 0.35,
+  // roots: their haze on the wall
+  'Root Shadow': true,
+  'Root Shadow Colour': '#6e766a',
+  'Root Shadow Blur': 0.75,
+  'Root Shadow Opacity': 0.35,
+  'Root Shadow Offset X': 0.02,
+  'Root Shadow Offset Y': -0.03,
+  'Root Shadow Size': 1.0,
+  // the wall (page 7's colour grading is used on top of it)
+  'Wall From Page 7': false,    // use page 7's background colours instead
+  'Wall Top': '#b9c0b4',
+  'Wall Bottom': '#a7ada2',
 };
-const RESOLUTION_KEYS = ['Petal Resolution Length', 'Petal Resolution Width', 'Leaf Resolution Length', 'Leaf Resolution Width', 'Round Segments'];
+// Version 1/2 names of the settings that are now the roots' / the wall's own (taken over the first time)
+const RENAMED = { 'Blur Amount': 'Root Blur Amount', 'Base Blur': 'Root Base Blur', 'Focus Distance': 'Root Focus Distance',
+  'Depth Range': 'Root Depth Range', 'Only Behind Focus': 'Root Only Behind Focus', 'Frost (paleness)': 'Root Frost',
+  'Bg Shadow': 'Root Shadow', 'Bg Shadow Colour': 'Root Shadow Colour', 'Bg Shadow Blur': 'Root Shadow Blur', 'Bg Shadow Opacity': 'Root Shadow Opacity',
+  'Bg Shadow Offset X': 'Root Shadow Offset X', 'Bg Shadow Offset Y': 'Root Shadow Offset Y', 'Bg Shadow Size': 'Root Shadow Size',
+  'Background Top': 'Wall Top', 'Background Bottom': 'Wall Bottom' };
 
 const QUAD_VERT = /* glsl */ `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
 const ADD_FRAG = /* glsl */ `uniform sampler2D tInput; uniform float uWeight; varying vec2 vUv; void main(){ gl_FragColor = texture2D(tInput, vUv) * uWeight; }`;
 const GLOW_FRAG = /* glsl */ `uniform sampler2D tInput, tPrev; uniform float uKeep; varying vec2 vUv;
   void main(){ vec4 c = texture2D(tInput, vUv), p = texture2D(tPrev, vUv); gl_FragColor = c + (p - c) * uKeep * (1.0 - c.a * 0.5); }`;
-// the flowers of now on top of their trail, all of it on top of the roots
-const COMBINE_FRAG = /* glsl */ `uniform sampler2D tTrail, tNow, tRoots; uniform float uNow; varying vec2 vUv;
-  void main(){ vec4 n = texture2D(tNow, vUv) * uNow; vec4 f = n + texture2D(tTrail, vUv) * (1.0 - n.a);
-    vec4 r = texture2D(tRoots, vUv); gl_FragColor = f + r * (1.0 - f.a); }`;
+// the flowers of now on top of their trail (page 7's combine); then all of it on top of the roots
+const COMBINE_FRAG = /* glsl */ `uniform sampler2D tTrail, tNow; uniform float uNow; varying vec2 vUv;
+  void main(){ vec4 n = texture2D(tNow, vUv) * uNow; gl_FragColor = n + texture2D(tTrail, vUv) * (1.0 - n.a); }`;
+const OVER_ROOTS_FRAG = /* glsl */ `uniform sampler2D tFlowers, tRoots; varying vec2 vUv;
+  void main(){ vec4 f = texture2D(tFlowers, vUv); gl_FragColor = f + texture2D(tRoots, vUv) * (1.0 - f.a); }`;
 
 // the movement of one vertex at one moment (same as page 7) plus the growth: the stem grows out of the root with
 // its leaves (every stem / leaf vertex knows its place along the stem, aStemT), the head scales in at the end
@@ -204,6 +167,19 @@ const VEL_VERT = /* glsl */ `
     gl_Position = c1;
   }`;
 const VEL_FRAG = /* glsl */ `varying vec3 vVel; void main(){ gl_FragColor = vec4(vVel.xy, 1.0, 1.0); }`;
+// a lily's own depth blur (page 7's circle of confusion): how far each of its pixels is from its focus plane, in
+// its own size (focus + depth range are page 7's, times the lily's size), so it is as soft as page 7's lily
+const COCF_VERT = /* glsl */ `
+  attribute float aPart; attribute float aU; attribute float aSeed;
+  ${MOTION_GLSL}
+  uniform float uMS, uMPh, uMTwist; uniform vec2 uMSway;
+  varying float vZ;
+  void main(){
+    vec3 n; vec4 mv = modelViewMatrix * vec4(lookMove(position, normal, aPart, aU, aSeed, uMS, uMPh, uMTwist, uMSway, n), 1.0);
+    vZ = -mv.z; gl_Position = projectionMatrix * mv;
+  }`;
+const COCF_FRAG = /* glsl */ `uniform float uFocusF, uRangeF, uBaseF, uBehindF; varying float vZ;
+  void main(){ float off = vZ - uFocusF; if (uBehindF > 0.5) off = max(off, 0.0); gl_FragColor = vec4(clamp(uBaseF + abs(off) / uRangeF, 0.0, 1.0), 0.0, 0.0, 1.0); }`;
 const STREAK_FRAG = /* glsl */ `
   uniform sampler2D tInput, tVel; uniform float uLen; varying vec2 vUv;
   void main(){
@@ -213,21 +189,26 @@ const STREAK_FRAG = /* glsl */ `
     for (int i = 0; i < 16; i++) { float f = float(i) / 15.0; float w = 1.0 - 0.6 * f; s += texture2D(tInput, vUv + d * (f - 0.25)) * w; wsum += w; }
     gl_FragColor = s / wsum;
   }`;
-// how blurred each pixel should be, from the nearest depth of the flowers and the roots
+// how blurred each pixel should be. The lilies (with their trails) are on top: their blur is page 7's, measured per
+// lily (tCocF); the roots below have their own focus / range in the garden's units. Out: (blur level x alpha / 1.5,
+// alpha, paleness x alpha): blur amount and frost are the lilies' (page 7) or the roots' own, mixed by coverage.
 const COC_FRAG = /* glsl */ `
   #include <packing>
-  uniform sampler2D tColor, tDepth, tDepth2, tNow, tRoots; uniform float uNear, uFar, uFocus, uRange, uBase, uBehind, uTrailSoft;
+  uniform sampler2D tFlowers, tNow, tCocF, tRoots, tRootDepth;
+  uniform float uNear, uFar, uTrailSoft, uAmtF, uFrostF;
+  uniform float uFocusR, uRangeR, uBaseR, uBehindR, uAmtR, uFrostR;
   varying vec2 vUv;
   void main(){
-    float a = texture2D(tColor, vUv).a;
-    float z = min(texture2D(tDepth, vUv).x, texture2D(tDepth2, vUv).x);
-    float d = -perspectiveDepthToViewZ(z, uNear, uFar);
-    float off = d - uFocus;
-    if (uBehind > 0.5) off = max(off, 0.0);
-    float coc = clamp(uBase + abs(off) / uRange, 0.0, 1.0);
-    float nowA = texture2D(tNow, vUv).a; nowA += texture2D(tRoots, vUv).a * (1.0 - nowA);
-    coc = mix(uTrailSoft, coc, nowA);
-    gl_FragColor = vec4(coc * a, a, 0.0, 1.0);
+    float fa = texture2D(tFlowers, vUv).a, ra = texture2D(tRoots, vUv).a;
+    float wf = fa, wr = ra * (1.0 - fa);
+    // the lily: as page 7 (its own blur where the flower of now is, the trail's softness elsewhere)
+    float cf = mix(uTrailSoft, texture2D(tCocF, vUv).r, texture2D(tNow, vUv).a);
+    // the roots
+    float d = -perspectiveDepthToViewZ(texture2D(tRootDepth, vUv).x, uNear, uFar);
+    float off = d - uFocusR;
+    if (uBehindR > 0.5) off = max(off, 0.0);
+    float cr = mix(uTrailSoft, clamp(uBaseR + abs(off) / uRangeR, 0.0, 1.0), ra);
+    gl_FragColor = vec4((wf * cf * uAmtF + wr * cr * uAmtR) / 1.5, wf + wr, wf * cf * uFrostF + wr * cr * uFrostR, 1.0);
   }`;
 const BLUR_FRAG = /* glsl */ `
   uniform sampler2D tInput; uniform vec2 uDir; varying vec2 vUv;
@@ -237,11 +218,14 @@ const BLUR_FRAG = /* glsl */ `
     s += (texture2D(tInput, vUv + uDir * 3.2307692308) + texture2D(tInput, vUv - uDir * 3.2307692308)) * 0.0702702703;
     gl_FragColor = s;
   }`;
+// final (page 7's): pick the blur level per pixel, put it on the background with the hazes, then grade.
+// Two hazes: the lilies' (page 7's settings, scaled around every lily: uAnchors) and the roots' own
 const FINAL_FRAG = /* glsl */ `
   uniform sampler2D tColor, tB1, tB2, tB3, tCoc, tCocBlur;
-  uniform vec2 uRes; uniform float uAmount, uFrost, uExposure, uContrast, uSat, uWarmth, uFade;
-  uniform vec3 uBgTop, uBgBottom, uShadow, uHigh; uniform float uShadowAmt, uHighAmt, uGlow;
-  uniform sampler2D tBgShadow; uniform vec3 uBsCol; uniform float uBsOpacity, uBsSize, uAspect, uBsGain; uniform vec2 uBsAnchor, uBsOffset;
+  uniform vec2 uRes; uniform float uExposure, uContrast, uSat, uWarmth, uFade;
+  uniform vec3 uBgTop, uBgBottom, uShadow, uHigh; uniform float uShadowAmt, uHighAmt, uGlow, uAspect;
+  uniform sampler2D tBsF, tBsR; uniform vec3 uBsColF, uBsColR; uniform float uBsOpF, uBsOpR, uBsSizeF, uBsSizeR, uBsGainF, uBsGainR;
+  uniform vec2 uBsOffF, uBsOffR; uniform vec4 uAnchors[16]; uniform int uAnchorCount;
   uniform vec4 uLights[8]; uniform int uLightCount; uniform vec3 uLightCol;
   varying vec2 vUv;
   vec4 level(float l){
@@ -250,27 +234,38 @@ const FINAL_FRAG = /* glsl */ `
     if (l < 2.0) return mix(c1, c2, l - 1.0);
     return mix(c2, c3, clamp(l - 2.0, 0.0, 1.0));
   }
+  float haze(sampler2D t, vec2 anchor, vec2 off, float size, float gain) {
+    vec2 suv = anchor + (vUv - anchor - off * vec2(1.0 / uAspect, 1.0)) / size;
+    float edge = smoothstep(0.0, 0.12, suv.x) * smoothstep(0.0, 0.12, 1.0 - suv.x) * smoothstep(0.0, 0.12, suv.y) * smoothstep(0.0, 0.12, 1.0 - suv.y);
+    return (1.0 - exp(-texture2D(t, suv).a * gain)) * edge;
+  }
   void main(){
-    vec2 own = texture2D(tCoc, vUv).rg;
-    vec2 near = texture2D(tCocBlur, vUv).rg;
-    float coc = own.g > 0.5 ? own.r / max(own.g, 1e-4) : near.r / max(near.g, 1e-4);
-    vec4 c = level(coc * 3.0 * uAmount);
+    vec3 own = texture2D(tCoc, vUv).rgb;
+    vec3 near = texture2D(tCocBlur, vUv).rgb;
+    vec3 k = own.g > 0.5 ? own : near;
+    float lv = k.r / max(k.g, 1e-4) * 1.5, frost = k.b / max(k.g, 1e-4);
+    vec4 c = level(lv * 3.0);
     vec3 bg = mix(uBgBottom, uBgTop, vUv.y);
     float bsMask = 0.0;
-    if (uBsOpacity > 0.0) {
-      vec2 suv = uBsAnchor + (vUv - uBsAnchor - uBsOffset * vec2(1.0 / uAspect, 1.0)) / uBsSize;
-      float edge = smoothstep(0.0, 0.12, suv.x) * smoothstep(0.0, 0.12, 1.0 - suv.x) * smoothstep(0.0, 0.12, suv.y) * smoothstep(0.0, 0.12, 1.0 - suv.y);
-      float sh = (1.0 - exp(-texture2D(tBgShadow, suv).a * uBsGain)) * edge;
-      bg = mix(bg, uBsCol, sh * uBsOpacity);
-      bsMask = step(0.002, sh * uBsOpacity);
+    if (uBsOpR > 0.0) { float sh = haze(tBsR, vec2(0.5), uBsOffR, uBsSizeR, uBsGainR); bg = mix(bg, uBsColR, sh * uBsOpR); bsMask = max(bsMask, step(0.002, sh * uBsOpR)); }
+    if (uBsOpF > 0.0 && uAnchorCount > 0) {
+      // every lily's haze is scaled around that lily (page 7 scales it around its one lily): a smooth mix of anchors
+      vec2 an = vec2(0.0); float ws = 0.0;
+      for (int i = 0; i < 16; i++) {
+        if (i >= uAnchorCount) break;
+        vec2 dv = (vUv - uAnchors[i].xy) * vec2(uAspect, 1.0);
+        float w = uAnchors[i].w / (dot(dv, dv) + uAnchors[i].z * uAnchors[i].z);
+        an += uAnchors[i].xy * w; ws += w;
+      }
+      float sh = haze(tBsF, an / ws, uBsOffF, uBsSizeF, uBsGainF);
+      bg = mix(bg, uBsColF, sh * uBsOpF); bsMask = max(bsMask, step(0.002, sh * uBsOpF));
     }
-    // the light on the wall (where the flashlight / mouse / fake lights are)
     for (int i = 0; i < 8; i++) {
       if (i >= uLightCount) break;
       vec2 dv = (vUv - uLights[i].xy) * vec2(uAspect, 1.0);
       bg += uLightCol * uLights[i].z * exp(-dot(dv, dv) / (uLights[i].w * uLights[i].w) * 2.0);
     }
-    c.rgb = mix(c.rgb, bg * c.a, clamp(coc * uFrost, 0.0, 1.0));
+    c.rgb = mix(c.rgb, bg * c.a, clamp(frost, 0.0, 1.0));
     vec3 col = bg * (1.0 - c.a) + c.rgb;
     col += texture2D(tB3, vUv).rgb * uGlow * 0.6;
     col *= uExposure;
@@ -290,16 +285,33 @@ const ease = (x) => { const c = clamp01(x); return c * c * (3 - 2 * c); };
 const rnd = (a, b) => a + Math.random() * (b - a);
 
 export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the version switch, name = window name for testing
-  const flowerDefaults = { ...defaults(FLOWER_PARAMS), 'Spot Amount': 0, 'Petal Resolution Length': 17, 'Petal Resolution Width': 7 };
-  const params = { ...flowerDefaults, ...GARDEN_DEFAULTS };
-  let stored = {};
+  // params = the garden's own settings + the lily settings of page 7 (read again every time the garden is shown;
+  // only the garden's own ones are saved here)
+  let blender = {};
+  const params = { ...loadLook7(blender), ...GARDEN_DEFAULTS };
   try {
     const own = localStorage.getItem(STORAGE_KEY);
-    stored = JSON.parse(own ?? localStorage.getItem(V1_STORAGE_KEY) ?? '{}');
+    const stored = JSON.parse(own ?? localStorage.getItem(V1_STORAGE_KEY) ?? '{}');
     if (own === null) for (const k of OWN_DEFAULTS) delete stored[k];
-    Object.assign(params, stored);
+    for (const [from, to] of Object.entries(RENAMED)) if (from in stored && !(to in stored)) stored[to] = stored[from];
+    for (const k of Object.keys(GARDEN_DEFAULTS)) if (k in stored) params[k] = stored[k];
   } catch { /* no storage */ }
-  const save = () => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(params)); } catch { /* ignore */ } };
+  const save = () => {
+    const own = Object.fromEntries(Object.keys(GARDEN_DEFAULTS).map((k) => [k, params[k]]));
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(own)); } catch { /* ignore */ }
+  };
+  // page 7's lily settings now; returns true if the shape of the flower (or of its breath) changed
+  const SHAPE_KEYS = new Set([...Object.keys(defaults(FLOWER_PARAMS)), 'Show Stem + Leaves', 'Petal Opacity', 'Open Most', 'Closed Most',
+    'Leaf Angle Closed', 'Leaf Angle Open', 'Leaf Fold Closed', 'Leaf Fold Open', 'Leaf Droop Breath']);
+  function syncLook() {
+    let shape = false;
+    for (const [k, v] of Object.entries(loadLook7(blender))) {
+      if (k in GARDEN_DEFAULTS || params[k] === v) continue;
+      if (SHAPE_KEYS.has(k)) shape = true;
+      params[k] = v;
+    }
+    return shape;
+  }
 
   const page = document.createElement('div');
   page.id = 'garden-page';
@@ -419,6 +431,10 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
     }
     return out;
   }
+  function boxOf(pos) {                          // the middle of the flower and how big it is (for its haze)
+    const b = new THREE.Box3().setFromArray(pos), c = b.getCenter(new THREE.Vector3());
+    return { centre: c, radius: b.getSize(new THREE.Vector3()).length() / 2 };
+  }
   function kindData(kind) {
     let k = kinds.get(kind);
     if (k) return k;
@@ -432,7 +448,7 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
       attrs: { color: new THREE.BufferAttribute(d.color, 3), aGrowth: new THREE.BufferAttribute(d.growth, 1), aU: new THREE.BufferAttribute(d.u, 1),
         aV: new THREE.BufferAttribute(d.v, 1), aPart: new THREE.BufferAttribute(d.part, 1), aSeed: new THREE.BufferAttribute(d.seed, 1),
         aStemT: new THREE.BufferAttribute(stemT(d, p), 1) },
-      foot: Math.min(-0.5, minY), stemLen: p['Stem Length'], stemBend: p['Stem Bend'],
+      foot: Math.min(-0.5, minY), stemLen: p['Stem Length'], stemBend: p['Stem Bend'], ...boxOf(d.position),
       axis: new THREE.Vector3(0, Math.cos(p['Head Tilt']), Math.sin(p['Head Tilt'])),
     };
     kinds.set(kind, k);
@@ -487,7 +503,7 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
       this.root = root; this.index = index; this.anchor = growth.anchorOn(root, index);
       this.born = growth.now;
       this.size = size; this.dir = dir;
-      this.lean = this.isFlower ? rnd(0.4, 0.8) : rnd(0.35, 0.7);                 // out of the wall, towards the viewer
+      this.lean = this.isFlower ? null : rnd(0.35, 0.7);     // out of the wall, towards the viewer (flowers: 'Flower lean')
       this.roll = rnd(0, Math.PI * 2);
       this.seedOff = Math.random() * 100;
       this.goAt = null; this.gone = false; this.crumbled = false;
@@ -510,10 +526,14 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
         uMFlutter: u.uMFlutter, uMFoot: u.uMFoot, uMAxis: u.uMAxis, uMPh: u.uMPh, uMTwist: u.uMTwist, uMSway: u.uMSway,
         uGrow: u.uGrow, uHead: u.uHead, uStemLen: u.uStemLen, uStemBend: u.uStemBend,
         uMS2: { value: 1 }, uMPh2: { value: 0 }, uMTwist2: { value: 0 }, uMSway2: { value: new THREE.Vector2() }, uPrevModel: { value: new THREE.Matrix4() } } });
+      this.cocMat = new THREE.ShaderMaterial({ vertexShader: COCF_VERT, fragmentShader: COCF_FRAG, side: THREE.DoubleSide, uniforms: {
+        uMFlutter: u.uMFlutter, uMFoot: u.uMFoot, uMAxis: u.uMAxis, uMS: u.uMS, uMPh: u.uMPh, uMTwist: u.uMTwist, uMSway: u.uMSway,
+        uGrow: u.uGrow, uHead: u.uHead, uStemLen: u.uStemLen, uStemBend: u.uStemBend,
+        uFocusF: { value: 1 }, uRangeF: { value: 1 }, uBaseF: { value: 0 }, uBehindF: { value: 0 } } });
       this.outer = new THREE.Group(); this.inner = new THREE.Group(); this.lily = new THREE.Group();
       this.outer.add(this.inner); this.inner.add(this.lily);
       for (const m of this.meshes) { m.frustumCulled = false; m.layers.set(LAYER_FLOWERS); this.lily.add(m); }
-      this.inner.rotation.x = this.lean;
+      this.inner.rotation.x = this.lean ?? 0;
       scene.add(this.outer);
       this.attach();
     }
@@ -526,7 +546,8 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
         for (const n of ['position', 'normal', 'aPosA', 'aPosB']) g.setAttribute(n, new THREE.BufferAttribute(new Float32Array(k.count * 3), 3));
       }
       this.u.uStemLen.value = k.stemLen; this.u.uStemBend.value = k.stemBend; this.u.uMFoot.value = k.foot; this.u.uMAxis.value.copy(k.axis);
-      for (const m of this.meshes) m.position.set(-k.stemBend, k.stemLen, 0);     // the foot of the stem sits on the root
+      // the foot of the stem sits on the root; the flower turns around its own axis (as on page 7)
+      this.lily.position.set(-k.stemBend, k.stemLen, 0);
       if (this.petalMat) this.petalMat.opacity = params['Petal Opacity'];
       this.poseVersion = -1;
     }
@@ -534,6 +555,11 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
     tt(t) { return t; }                          // one breath for all: a new flower joins the current breath
     // where it is: on the (drawn) root, moved with the sway of its cluster and the depth wave
     place() {
+      if (this.pin) {                            // a lily put somewhere on purpose (testing): no root, no sway
+        this.outer.position.set(this.pin.x, this.pin.y, 0); this.outer.rotation.z = this.dir - Math.PI / 2;
+        this.outer.scale.setScalar(this.size); this.inner.rotation.x = THREE.MathUtils.degToRad(this.pin.lean ?? params['Flower Lean (°)']);
+        return;
+      }
       const line = tubes.lines?.get(this.root) ?? this.root.points;
       const p = line[Math.min(this.index, line.length - 1)];
       const c = growth.centerOf(this.root), [ox, oy] = toWorld(c.x, c.y), [wx, wy] = toWorld(p.x, p.y);
@@ -543,14 +569,19 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
       this.outer.position.set(x, y, waveZ(x, y, waveT) * params['Blur Variation']);
       this.outer.rotation.z = this.dir + a - Math.PI / 2;
       this.outer.scale.setScalar(this.size);
+      if (this.isFlower) this.inner.rotation.x = THREE.MathUtils.degToRad(params['Flower Lean (°)']);
     }
     // the stage of its life: growing, bud, breathing, dissolving
-    update(now, dt) {
+    update(now, dt, lights = []) {
+      if (this.pin) { this.u.uGrow.value = 1; this.u.uHead.value = this.isFlower ? 1 : 0; this.place(); return; }
+      // grows only while a light is near (its vigour runs down over 'Growth after the light leaves' once it's gone)
+      this.vigor = growth.settle(this.vigor ?? 1, growth.nearness(pointOf(this.root, this.index), lights), dt);
+      this.age = (this.age ?? 0) + dt * ease(this.vigor);
       if (this.goAt === null) {
         const a = this.anchor();
         if (a !== true) this.goAt = Math.max(now, typeof a === 'number' ? a : now);
       }
-      const age = now - this.born, u = this.u;
+      const age = this.age, u = this.u;
       if (this.isFlower) {
         const grow = params['Stem Grow (s)'];
         u.uGrow.value = ease(age / grow);
@@ -583,6 +614,21 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
       vu.uPrevModel.value.copy(this.solidMesh.matrixWorld);
       this.lily.rotation.y = keep; this.outer.updateMatrixWorld(true);
     }
+    // page 7's depth blur, in this lily's size: focus = the depth of the point page 7 looks at (+ its Focus
+    // Distance), depth range x size. And where its middle is on the screen (its haze is scaled around it)
+    prepareCoc() {
+      this.outer.updateMatrixWorld(true);
+      _v.set(0, LOOK7_TARGET_Y, 0).applyMatrix4(this.solidMesh.matrixWorld).applyMatrix4(camera.matrixWorldInverse);
+      const cu = this.cocMat.uniforms, s = this.size;
+      cu.uFocusF.value = -_v.z + params['Focus Distance'] * s; cu.uRangeF.value = params['Depth Range'] * s;
+      cu.uBaseF.value = params['Base Blur']; cu.uBehindF.value = params['Only Behind Focus'] ? 1 : 0;
+    }
+    screenAnchor(out) {                          // x, y (0..1), radius (screen heights), weight
+      const k = this.k;
+      _v.copy(k.centre).applyMatrix4(this.solidMesh.matrixWorld).project(camera);
+      const r = k.radius * this.size / (SIM_H / PX);            // in screen heights (the screen is SIM_H / PX units high)
+      return out.set(_v.x * 0.5 + 0.5, _v.y * 0.5 + 0.5, r, r * r);
+    }
     crumble(now) {                               // falls apart: particles from its vertices
       const g = this.geometry, pos = g.attributes.position.array, part = this.k.attrs.aPart.array, n = this.k.count;
       this.solidMesh.updateMatrixWorld(true);
@@ -601,7 +647,7 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
     }
     dispose() {
       scene.remove(this.outer);
-      this.geometry.dispose(); this.solidMat.dispose(); this.petalMat?.dispose(); this.velMat.dispose();
+      this.geometry.dispose(); this.solidMat.dispose(); this.petalMat?.dispose(); this.velMat.dispose(); this.cocMat.dispose();
     }
   }
 
@@ -671,7 +717,8 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
     for (let i = pending.length - 1; i >= 0; i--) {
       const f = pending[i], r = f.root, last = r.points.length - 1;
       let done = !growth.alive(r) || now > f.until;
-      if (!done && last >= f.index + 1) { tryFlower(r, f.index); done = true; }
+      if (!done && (r.vigor ?? 1) < 0.2) { f.spot.energy += FLOWER_COST; done = true; }   // the light left first: no flower (energy back)
+      else if (!done && last >= f.index + 1) { tryFlower(r, f.index); done = true; }
       else if (!done && r.burstSteps === 0 && r.distanceToGrow < 3) { if (last >= 2) tryFlower(r, Math.max(1, last - 1)); done = true; }
       if (done) pending.splice(i, 1);
     }
@@ -684,11 +731,11 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
         dust.push({ x, y, z: 0.02, vx: e.vx / PX, vy: -e.vy / PX, vz: rnd(0, 0.05), born: e.born, life: e.life, size: e.size * 3.2 / PX, color: [c.r, c.g, c.b] });
       } else if (e.type === 'connect') {
         // roots of two lights joined: sometimes a flower right where they meet (the rest comes from the energy below)
-        if (Math.random() < 0.25) tryFlower(e.root, e.root.points.length - 2 - Math.floor(Math.random() * 4));
+        if ((e.root.vigor ?? 1) > 0.5 && Math.random() < 0.25) tryFlower(e.root, e.root.points.length - 2 - Math.floor(Math.random() * 4));
       } else if (e.type === 'boost') {
         if (e.level >= 2) flowerFor(e.spot);
       } else if (e.type === 'leaf') {
-        if (Math.random() < params['Branch Leaves'] * (e.route ? 0.7 : 1)) tryLeaf(e.root, e.index);
+        if ((e.root.vigor ?? 1) > 0.3 && Math.random() < params['Branch Leaves'] * (e.route ? 0.7 : 1)) tryLeaf(e.root, e.index);
       }
     }
     if (dust.length) particles.spawn(dust);
@@ -697,7 +744,8 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
       let near = null;
       for (const l of lights) if (Math.hypot(l.x - spot.x, l.y - spot.y) < 130) { spot.energy += dt * (l.strength ?? 1); near = l; }
       if (spot.energy >= FLOWER_COST) {
-        if (flowersOf(spot) + pendingOf(spot) < 1 + Math.min(spot.links, 3) && flowerFor(spot, near)) spot.energy -= FLOWER_COST;
+        // only while a light is on the spot (flowers grow near the light, not after it has gone)
+        if (near && flowersOf(spot) + pendingOf(spot) < 1 + Math.min(spot.links, 3) && flowerFor(spot, near)) spot.energy -= FLOWER_COST;
         spot.energy = Math.min(spot.energy, FLOWER_COST * 1.5);
       }
     }
@@ -712,24 +760,30 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
     return t;
   };
   let velRT, velB, velTmp, streakRT, sceneRT, rootsRT, subRT, trailRT, glowA, glowB, colorRT, cocRT, b1, b2, b3, tmp1, tmp2, tmp3, cocB, cocTmp, bsA, bsB, emptyRT;
+  let flowersRT, cocFRT, hb1, hb2, hb3, bsFA, bsFB;      // the lilies alone (for their haze), their own blur
   const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
   const quadScene = new THREE.Scene(); quadScene.add(quad);
   const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const cocMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: COC_FRAG,
-    uniforms: { tColor: { value: null }, tDepth: { value: null }, tDepth2: { value: null }, tNow: { value: null }, tRoots: { value: null }, uNear: { value: 1 }, uFar: { value: 60 }, uFocus: { value: CAM_DIST }, uRange: { value: 1 }, uBase: { value: 0 }, uBehind: { value: 0 }, uTrailSoft: { value: 0 } } });
+    uniforms: { tFlowers: { value: null }, tNow: { value: null }, tCocF: { value: null }, tRoots: { value: null }, tRootDepth: { value: null },
+      uNear: { value: 1 }, uFar: { value: 60 }, uTrailSoft: { value: 0 }, uAmtF: { value: 1 }, uFrostF: { value: 0 },
+      uFocusR: { value: CAM_DIST }, uRangeR: { value: 1 }, uBaseR: { value: 0 }, uBehindR: { value: 0 }, uAmtR: { value: 1 }, uFrostR: { value: 0 } } });
   const glowMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: GLOW_FRAG, uniforms: { tInput: { value: null }, tPrev: { value: null }, uKeep: { value: 0 } } });
   const streakMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: STREAK_FRAG, uniforms: { tInput: { value: null }, tVel: { value: null }, uLen: { value: 1 } } });
-  const combineMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: COMBINE_FRAG, uniforms: { tTrail: { value: null }, tNow: { value: null }, tRoots: { value: null }, uNow: { value: 1 } } });
+  const combineMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: COMBINE_FRAG, uniforms: { tTrail: { value: null }, tNow: { value: null }, uNow: { value: 1 } } });
+  const overRootsMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: OVER_ROOTS_FRAG, uniforms: { tFlowers: { value: null }, tRoots: { value: null } } });
   const addMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: ADD_FRAG, uniforms: { tInput: { value: null }, uWeight: { value: 1 } },
     blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor, depthTest: false, depthWrite: false, transparent: true });
   const blurMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: BLUR_FRAG, uniforms: { tInput: { value: null }, uDir: { value: new THREE.Vector2() } } });
   const finalMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VERT, fragmentShader: FINAL_FRAG, uniforms: {
     tColor: { value: null }, tB1: { value: null }, tB2: { value: null }, tB3: { value: null }, tCoc: { value: null }, tCocBlur: { value: null },
-    uRes: { value: new THREE.Vector2() }, uAmount: { value: 1 }, uFrost: { value: 0 }, uExposure: { value: 1 }, uContrast: { value: 1 }, uSat: { value: 1 },
+    uRes: { value: new THREE.Vector2() }, uExposure: { value: 1 }, uContrast: { value: 1 }, uSat: { value: 1 },
     uWarmth: { value: 0 }, uFade: { value: 0 }, uBgTop: { value: new THREE.Color() }, uBgBottom: { value: new THREE.Color() },
-    uShadow: { value: new THREE.Color() }, uHigh: { value: new THREE.Color() }, uShadowAmt: { value: 0 }, uHighAmt: { value: 0 },
-    uGlow: { value: 0 }, tBgShadow: { value: null }, uBsCol: { value: new THREE.Color() }, uBsOpacity: { value: 0 }, uBsGain: { value: 3 }, uBsSize: { value: 1 },
-    uAspect: { value: 1 }, uBsAnchor: { value: new THREE.Vector2(0.5, 0.5) }, uBsOffset: { value: new THREE.Vector2() },
+    uShadow: { value: new THREE.Color() }, uHigh: { value: new THREE.Color() }, uShadowAmt: { value: 0 }, uHighAmt: { value: 0 }, uGlow: { value: 0 }, uAspect: { value: 1 },
+    tBsF: { value: null }, tBsR: { value: null }, uBsColF: { value: new THREE.Color() }, uBsColR: { value: new THREE.Color() },
+    uBsOpF: { value: 0 }, uBsOpR: { value: 0 }, uBsSizeF: { value: 1 }, uBsSizeR: { value: 1 }, uBsGainF: { value: 3 }, uBsGainR: { value: 3 },
+    uBsOffF: { value: new THREE.Vector2() }, uBsOffR: { value: new THREE.Vector2() },
+    uAnchors: { value: Array.from({ length: 16 }, () => new THREE.Vector4()) }, uAnchorCount: { value: 0 },
     uLights: { value: Array.from({ length: 8 }, () => new THREE.Vector4()) }, uLightCount: { value: 0 }, uLightCol: { value: new THREE.Color(1, 0.97, 0.9) } } });
 
   function pass(mat, target) { quad.material = mat; renderer.setRenderTarget(target); renderer.render(quadScene, quadCam); }
@@ -750,7 +804,11 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
     SIM_W = SIM_H * W / H; growth.setSize(SIM_W, SIM_H); lightInput.setSize(SIM_W, SIM_H);
     const pr = renderer.getPixelRatio(), w = Math.round(W * pr), h = Math.round(H * pr);
     particles.material.uniforms.uPx.value = h / (2 * Math.tan((FOV * Math.PI) / 360));
-    for (const t of [velRT, velB, velTmp, streakRT, sceneRT, rootsRT, subRT, trailRT, glowA, glowB, colorRT, cocRT, b1, b2, b3, tmp1, tmp2, tmp3, cocB, cocTmp, bsA, bsB, emptyRT]) t?.dispose();
+    for (const t of [velRT, velB, velTmp, streakRT, sceneRT, rootsRT, subRT, trailRT, glowA, glowB, colorRT, cocRT, b1, b2, b3, tmp1, tmp2, tmp3, cocB, cocTmp, bsA, bsB, emptyRT,
+      flowersRT, cocFRT, hb1, hb2, hb3, bsFA, bsFB]) t?.dispose();
+    flowersRT = rt(w, h); cocFRT = rt(w, h, true);
+    hb1 = rt(w >> 1, h >> 1); hb2 = rt(w >> 2, h >> 2); hb3 = rt(w >> 3, h >> 3);
+    bsFA = rt(Math.max(w >> 4, 8), Math.max(h >> 4, 8)); bsFB = rt(Math.max(w >> 4, 8), Math.max(h >> 4, 8));
     sceneRT = rt(w, h, true); rootsRT = rt(w, h, true); colorRT = rt(w, h); cocRT = rt(w, h);
     subRT = rt(w >> 1, h >> 1, true); trailRT = rt(w >> 1, h >> 1);
     glowA = rt(w >> 1, h >> 1); glowB = rt(w >> 1, h >> 1); glowFresh = true;
@@ -828,39 +886,64 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
     for (const p of plants) p.motionAt(now, 1);
     renderNow();
     renderLayer(LAYER_ROOTS, rootsRT);
-    combineMat.uniforms.tTrail.value = trailTex; combineMat.uniforms.tNow.value = sceneRT.texture; combineMat.uniforms.tRoots.value = rootsRT.texture;
+    // the lilies (now on top of their trail, as page 7), then over the roots
+    combineMat.uniforms.tTrail.value = trailTex; combineMat.uniforms.tNow.value = sceneRT.texture;
     combineMat.uniforms.uNow.value = trails ? params['Now Strength'] : 1;
-    pass(combineMat, colorRT);
-    // how blurred each pixel should be
+    pass(combineMat, flowersRT);
+    overRootsMat.uniforms.tFlowers.value = flowersRT.texture; overRootsMat.uniforms.tRoots.value = rootsRT.texture;
+    pass(overRootsMat, colorRT);
+    // every lily's own depth blur (page 7's, in its size)
+    renderer.setClearColor(0xffffff, 1); renderer.setRenderTarget(cocFRT); renderer.clear(); renderer.setClearColor(0x000000, 0);
+    for (const p of plants) { p.prepareCoc(); for (const m of p.meshes) m.material = p.cocMat; }
+    if (plants.length) renderLayer(LAYER_FLOWERS, cocFRT, false);
+    for (const p of plants) { p.solidMesh.material = p.solidMat; if (p.petalMesh) p.petalMesh.material = p.petalMat; }
+    // how blurred each pixel should be (lilies: page 7's, roots: their own)
     const cu = cocMat.uniforms;
-    cu.tColor.value = colorRT.texture; cu.tDepth.value = sceneRT.depthTexture; cu.tDepth2.value = rootsRT.depthTexture;
-    cu.tNow.value = sceneRT.texture; cu.tRoots.value = rootsRT.texture;
-    cu.uTrailSoft.value = params['Trail Softness']; cu.uNear.value = camera.near; cu.uFar.value = camera.far;
-    cu.uFocus.value = CAM_DIST + params['Focus Distance']; cu.uRange.value = params['Depth Range'];
-    cu.uBase.value = params['Base Blur']; cu.uBehind.value = params['Only Behind Focus'] ? 1 : 0;
+    cu.tFlowers.value = flowersRT.texture; cu.tNow.value = sceneRT.texture; cu.tCocF.value = cocFRT.texture;
+    cu.tRoots.value = rootsRT.texture; cu.tRootDepth.value = rootsRT.depthTexture;
+    cu.uNear.value = camera.near; cu.uFar.value = camera.far; cu.uTrailSoft.value = params['Trail Softness'];
+    cu.uAmtF.value = params['Blur Amount']; cu.uFrostF.value = params['Frost (paleness)'];
+    cu.uFocusR.value = CAM_DIST + params['Root Focus Distance']; cu.uRangeR.value = params['Root Depth Range'];
+    cu.uBaseR.value = params['Root Base Blur']; cu.uBehindR.value = params['Root Only Behind Focus'] ? 1 : 0;
+    cu.uAmtR.value = params['Root Blur Amount']; cu.uFrostR.value = params['Root Frost'];
     pass(cocMat, cocRT);
     blur(cocRT, cocTmp, cocB, 2.0);
     blur(colorRT, tmp1, b1, 1.6); blur(b1, tmp2, b2, 1.8); blur(b2, tmp3, b3, 2.2);
-    const bsOn = params['Bg Shadow'] && params['Bg Shadow Opacity'] > 0;
-    if (bsOn) {
-      const amt = params['Bg Shadow Blur'], r = 1 + amt * 5, passes = 1 + Math.round(amt * 6);
-      blur(b3, bsB, bsA, r);
+    // hazes on the wall (page 7: the blurred flower at 1/16 size, blurred again a few times): the roots' from the
+    // roots alone (their own settings), the lilies' from the lilies alone (page 7's settings)
+    const bsR = params['Root Shadow'] && params['Root Shadow Opacity'] > 0;
+    if (bsR) {
+      blur(rootsRT, tmp1, hb1, 1.6); blur(hb1, tmp2, hb2, 1.8); blur(hb2, tmp3, hb3, 2.2);
+      const amt = params['Root Shadow Blur'], r = 1 + amt * 5, passes = 1 + Math.round(amt * 6);
+      blur(hb3, bsB, bsA, r);
       for (let i = 0; i < passes; i++) blur(bsA, bsB, bsA, r);
+    }
+    const bsF = params['Bg Shadow'] && params['Bg Shadow Opacity'] > 0 && plants.some((p) => p.isFlower);
+    if (bsF) {
+      blur(flowersRT, tmp1, hb1, 1.6); blur(hb1, tmp2, hb2, 1.8); blur(hb2, tmp3, hb3, 2.2);
+      const amt = params['Bg Shadow Blur'], r = 1 + amt * 5, passes = 1 + Math.round(amt * 6);
+      blur(hb3, bsFB, bsFA, r);
+      for (let i = 0; i < passes; i++) blur(bsFA, bsFB, bsFA, r);
     }
     const f = finalMat.uniforms;
     f.tColor.value = colorRT.texture; f.tB1.value = b1.texture; f.tB2.value = b2.texture; f.tB3.value = b3.texture;
     f.tCoc.value = cocRT.texture; f.tCocBlur.value = cocB.texture;
-    f.uAmount.value = params['Blur Amount']; f.uFrost.value = params['Frost (paleness)'];
     f.uExposure.value = params['Exposure']; f.uContrast.value = params['Contrast']; f.uSat.value = params['Saturation'];
     f.uWarmth.value = params['Warmth']; f.uFade.value = params['Fade'];
-    f.uBgTop.value.set(params['Background Top']); f.uBgBottom.value.set(params['Background Bottom']);
+    const wall7 = params['Wall From Page 7'];
+    f.uBgTop.value.set(params[wall7 ? 'Background Top' : 'Wall Top']); f.uBgBottom.value.set(params[wall7 ? 'Background Bottom' : 'Wall Bottom']);
     f.uShadow.value.set(params['Shadow Tint']); f.uHigh.value.set(params['Highlight Tint']);
     f.uShadowAmt.value = params['Shadow Tint Amount']; f.uHighAmt.value = params['Highlight Tint Amount'];
-    f.uGlow.value = params['Glow'];
-    f.tBgShadow.value = bsA.texture; f.uBsOpacity.value = bsOn ? params['Bg Shadow Opacity'] : 0;
-    f.uBsGain.value = 3 * (1 + 3 * params['Bg Shadow Blur']);
-    f.uBsCol.value.set(params['Bg Shadow Colour']); f.uBsSize.value = params['Bg Shadow Size'];
-    f.uBsOffset.value.set(params['Bg Shadow Offset X'], params['Bg Shadow Offset Y']); f.uAspect.value = W / H;
+    f.uGlow.value = params['Glow']; f.uAspect.value = W / H;
+    f.tBsR.value = bsA.texture; f.uBsOpR.value = bsR ? params['Root Shadow Opacity'] : 0;
+    f.uBsGainR.value = 3 * (1 + 3 * params['Root Shadow Blur']); f.uBsColR.value.set(params['Root Shadow Colour']);
+    f.uBsSizeR.value = params['Root Shadow Size']; f.uBsOffR.value.set(params['Root Shadow Offset X'], params['Root Shadow Offset Y']);
+    f.tBsF.value = bsFA.texture; f.uBsOpF.value = bsF ? params['Bg Shadow Opacity'] : 0;
+    f.uBsGainF.value = 3 * (1 + 3 * params['Bg Shadow Blur']); f.uBsColF.value.set(params['Bg Shadow Colour']);
+    f.uBsSizeF.value = params['Bg Shadow Size']; f.uBsOffF.value.set(params['Bg Shadow Offset X'], params['Bg Shadow Offset Y']);
+    let na = 0;
+    for (const p of plants) if (p.isFlower && !p.crumbled && na < 16) p.screenAnchor(f.uAnchors.value[na++]);
+    f.uAnchorCount.value = na;
     const nL = Math.min(lights.length, 8);
     for (let i = 0; i < nL; i++) f.uLights.value[i].set(lights[i].x / SIM_W, 1 - lights[i].y / SIM_H, params['Light Glow'], 0.16);
     f.uLightCount.value = nL;
@@ -881,12 +964,13 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
     swayT = (swayT + dt) % SWAY_PERIOD;
     growth.live.stay = params['Root Stay (s)']; growth.live.dissolve = params['Dissolve (s)']; growth.live.spread = params['Dissolve Spread'];
     growth.live.branches = params['Side Branches']; growth.live.smoothness = params['Growth Smoothness'];
+    growth.live.linger = params['Growth Linger (s)'];
     tubes.u.uFadeLen.value = 0.8;
     if (growth.dirty) { tubes.rebuild(growth, toWorld, 1 / PX); growth.clean(); }
     t = mark('tubes', t);
     handleEvents(events, lights, dt, now);
     updatePending(now);
-    for (const p of plants) p.update(now, dt);
+    for (const p of plants) p.update(now, dt, lights);
     for (let i = plants.length - 1; i >= 0; i--) if (plants[i].gone) { plants[i].dispose(); plants.splice(i, 1); }
     t = mark('plants', t);
     warm();
@@ -904,8 +988,7 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
   gui.hide();
   opts.panelTop?.(gui);
   const onLook = () => { save(); };
-  const onFlower = () => { save(); kinds.clear(); for (const p of plants) p.attach(); };
-  const onBreathShape = () => { save(); for (const k of kinds.values()) k.targets.clear(); };
+  const onFlower = () => { kinds.clear(); for (const p of plants) p.attach(); };   // the flower's shape changed (on page 7)
 
   const fi = gui.addFolder('Light input');
   const inputCtl = { 'Use camera': false, 'Show camera view': false, Calibrate: () => lightInput.calibrate(),
@@ -921,6 +1004,7 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
 
   const fg = gui.addFolder('Garden: flowers');
   fg.add(params, 'Flower Size', 0.2, 1.2, 0.01).name('Flower size').onChange(onLook);
+  fg.add(params, 'Flower Lean (°)', 0, 60, 0.5).name('Lean towards you (°, page 7 = ' + params['Flower Lean (°)'] + ')').onChange(onLook);
   fg.add(params, 'Max Flowers', 0, 20, 1).name('Flowers at most').onChange(onLook);
   fg.add(params, 'Flower Spacing', 40, 300, 1).name('Space between flowers (px)').onChange(onLook);
   fg.add(params, 'Stem Grow (s)', 0.5, 8, 0.1).name('Stem grows in (s)').onChange(onLook);
@@ -933,6 +1017,7 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
   fr.addColor(params, 'Root Colour 2').name('Root colour 2 (variation)').onChange(onLook);
   fr.add(params, 'Side Branches', 0, 1.5, 0.01).name('Side branches (1 = Version 1)').onChange(onLook);
   fr.add(params, 'Growth Smoothness', 0, 1, 0.01).name('Growth smoothness').onChange(onLook);
+  fr.add(params, 'Growth Linger (s)', 0.2, 8, 0.1).name('Growth after the light leaves (s)').onChange(onLook);
   fr.add(params, 'Root Thickness', 0.2, 3, 0.01).name('Thickness').onChange(onLook);
   fr.add(params, 'Blur Variation', 0, 2, 0.01).name('Blur variation (amount)').onChange(onLook);
   fr.add(params, 'Blur Variation Speed', 0, 3, 0.01).name('Blur variation (speed)').onChange(onLook);
@@ -942,120 +1027,43 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
   fr.add(params, 'Dissolve Spread', 0, 3, 0.01).name('Dissolve spread').onChange(onLook);
   fr.add(params, 'Light Glow', 0, 0.5, 0.005).name('Light on the wall').onChange(onLook);
 
-  const ff = gui.addFolder('Flower');
-  for (const [k, label] of Object.entries(FLOWER_KEYS)) {
-    let range = null;
-    for (const g of Object.values(FLOWER_PARAMS)) if (g[k]) range = g[k];
-    if (!range) continue;
-    ff.add(params, k, range[1], range[2], range[3]).name(label).onChange(onFlower);
-  }
-  const linHex = (rgb) => `#${new THREE.Color().setRGB(...rgb, THREE.LinearSRGBColorSpace).getHexString()}`;
-  const onBlossom = () => {
-    const h = params['Blossom Hue'], sat = params['Blossom Saturation'], v = params['Blossom Value'];
-    params['Petal Light Colour'] = linHex(hsv(h, sat * 0.4, Math.min(1, v * 1.3)));
-    params['Petal Dark Colour'] = linHex(hsv(h + 0.01, Math.min(1, sat * 1.2), v * 0.4));
-    gui.controllersRecursive().forEach((c) => c.updateDisplay());
-    save();
-  };
-  ff.add(params, 'Blossom Hue', 0, 1, 0.005).name('Colour (hue)').onChange(onBlossom);
-  ff.add(params, 'Blossom Saturation', 0, 1, 0.01).name('Colour (saturation)').onChange(onBlossom);
-  ff.add(params, 'Blossom Value', 0, 1, 0.01).name('Colour (brightness)').onChange(onBlossom);
-  ff.add(params, 'Petal Opacity', 0.2, 1, 0.01).name('Petal opacity').onChange(() => { save(); for (const p of plants) if (p.petalMat) p.petalMat.opacity = params['Petal Opacity']; });
-  ff.add(params, 'Petal Edges', 0, 1, 0.01).name('Petal edges + veins').onChange(onLook);
-  ff.add(params, 'Petal Centre Opacity', 0, 1, 0.01).name('Petal middle opacity').onChange(onLook);
-  ff.add(params, 'Petal Edge Opacity', 0, 1, 0.01).name('Petal edge opacity').onChange(onLook);
-  ff.add(params, 'Petal Opacity Blend', 0.05, 1, 0.01).name('Middle → edge softness').onChange(onLook);
-  ff.add(params, 'Show Stem + Leaves').name('Stem + leaves').onChange(onFlower);
-
-  const flv = gui.addFolder('Leaves');
-  const flowerRange = (k) => { for (const g of Object.values(FLOWER_PARAMS)) if (g[k]) return g[k].slice(1, 4); return [0, 1, 0.01]; };
-  flv.add(params, 'Leaf Angle', ...flowerRange('Leaf Angle')).name('Angle (still flower)').onChange(onFlower);
-  flv.add(params, 'Leaf Fold', ...flowerRange('Leaf Fold')).name('Fold (still flower)').onChange(onFlower);
-  flv.add(params, 'Leaf Droop', ...flowerRange('Leaf Droop')).name('Droop').onChange(onFlower);
-  flv.add(params, 'Leaf Twist', ...flowerRange('Leaf Twist')).name('Twist').onChange(onFlower);
-  flv.add(params, 'Leaf Angle Closed', 0, 150, 0.5).name('Breath: angle closed (°)').onChange(onBreathShape);
-  flv.add(params, 'Leaf Angle Open', 0, 150, 0.5).name('Breath: angle open (°)').onChange(onBreathShape);
-  flv.add(params, 'Leaf Fold Closed', -1, 1, 0.01).name('Breath: fold closed').onChange(onBreathShape);
-  flv.add(params, 'Leaf Fold Open', -1, 1, 0.01).name('Breath: fold open').onChange(onBreathShape);
-  flv.add(params, 'Leaf Droop Breath', 0, 1, 0.01).name('Breath: less droop closed').onChange(onBreathShape);
-
-  const fc = gui.addFolder('Petal + stem colours');
-  fc.addColor(params, 'Petal Light Colour').name('Light petal colour').onChange(onLook);
-  fc.addColor(params, 'Petal Dark Colour').name('Dark petal colour').onChange(onLook);
-  fc.add(params, 'Petal Tone', 0, 1, 0.01).name('Light ↔ dark').onChange(onLook);
-  fc.add(params, 'Petal Variation', 0, 1, 0.01).name('Between petals (same → mixed)').onChange(onLook);
-  fc.add(params, 'Petal Gradient', 0, 1.5, 0.01).name('Gradient (dark base → light tip)').onChange(onLook);
-  fc.add(params, 'Petal Edge Variation', 0, 1, 0.01).name('Edges (some dark, some light)').onChange(onLook);
-  fc.addColor(params, 'Stem Colour').name('Stem colour').onChange(onLook);
-  fc.addColor(params, 'Leaf Colour').name('Leaf colour').onChange(onLook);
-
-  const fb = gui.addFolder('Blur (frosted glass)');
-  fb.add(params, 'Blur Amount', 0, 1.5, 0.01).name('Blur amount').onChange(onLook);
-  fb.add(params, 'Base Blur', 0, 1, 0.01).name('Blur everywhere').onChange(onLook);
-  fb.add(params, 'Focus Distance', -3, 3, 0.01).name('Sharp at (- near, + far)').onChange(onLook);
-  fb.add(params, 'Depth Range', 0.2, 5, 0.01).name('Depth to full blur').onChange(onLook);
-  fb.add(params, 'Only Behind Focus').name('Only blur behind').onChange(onLook);
-  fb.add(params, 'Frost (paleness)', 0, 1, 0.01).name('Paler when blurred').onChange(onLook);
-
-  const fs = gui.addFolder('Background shadow');
-  fs.add(params, 'Bg Shadow').name('Shadow on/off').onChange(onLook);
-  fs.addColor(params, 'Bg Shadow Colour').name('Colour (lighter/darker than bg)').onChange(onLook);
-  fs.add(params, 'Bg Shadow Blur', 0, 1, 0.01).name('Blur').onChange(onLook);
-  fs.add(params, 'Bg Shadow Opacity', 0, 1, 0.01).name('Opacity').onChange(onLook);
-  fs.add(params, 'Bg Shadow Offset X', -0.5, 0.5, 0.005).name('Offset (- left, + right)').onChange(onLook);
-  fs.add(params, 'Bg Shadow Offset Y', -0.5, 0.5, 0.005).name('Offset (- down, + up)').onChange(onLook);
-  fs.add(params, 'Bg Shadow Size', 0.5, 3, 0.01).name('Size').onChange(onLook);
-
-  const fl = gui.addFolder('Colour');
-  fl.addColor(params, 'Background Top').name('Background top').onChange(onLook);
-  fl.addColor(params, 'Background Bottom').name('Background bottom').onChange(onLook);
-  fl.add(params, 'Exposure', 0.3, 2, 0.01).onChange(onLook);
-  fl.add(params, 'Contrast', 0.4, 1.6, 0.01).onChange(onLook);
-  fl.add(params, 'Saturation', 0, 2, 0.01).onChange(onLook);
-  fl.add(params, 'Warmth', -1, 1, 0.01).onChange(onLook);
-  fl.add(params, 'Fade', 0, 0.4, 0.005).name('Fade (lift blacks)').onChange(onLook);
-  fl.addColor(params, 'Shadow Tint').name('Shadow colour').onChange(onLook);
-  fl.add(params, 'Shadow Tint Amount', 0, 1, 0.01).name('Shadow colour amount').onChange(onLook);
-  fl.addColor(params, 'Highlight Tint').name('Highlight colour').onChange(onLook);
-  fl.add(params, 'Highlight Tint Amount', 0, 1, 0.01).name('Highlight colour amount').onChange(onLook);
-  fl.add(params, 'Glow', 0, 1.5, 0.01).onChange(onLook);
-
-  const fbr = gui.addFolder('Breathing');
-  fbr.add(params, 'Breath In (s)', 1, 10, 0.1).name('Breath in (opens), s').onChange(onLook);
-  fbr.add(params, 'Breath Out (s)', 1, 10, 0.1).name('Breath out (closes), s').onChange(onLook);
-  fbr.add(params, 'Open Most', 0, 1, 0.01).name('Most open (1 = fully)').onChange(onBreathShape);
-  fbr.add(params, 'Closed Most', 0, 1, 0.01).name('Most closed (0 = bud)').onChange(onBreathShape);
-  fbr.add(params, 'Breath Turn', 0, 120, 0.5).name('Turn with the breath (°)').onChange(onLook);
-  fbr.add(params, 'Sway', 0, 25, 0.1).name('Sway on the stem (°)').onChange(onLook);
-  fbr.add(params, 'Petal Lag', 0, 3, 0.01).name('Petal tips lag (swirl)').onChange(onLook);
-  fbr.add(params, 'Petal Flutter', 0, 0.3, 0.001).name('Petals flutter').onChange(onLook);
-  const fm = gui.addFolder('Long exposure (motion trails)');
-  fm.add(params, 'Trail Length (s)', 0, 3, 0.01).name('Exposure time (s, 0 = off)').onChange(onLook);
-  fm.add(params, 'Trail Copies', 2, 48, 1).name('Copies (smoother = slower)').onChange(onLook);
-  fm.add(params, 'Trail Fade', 0, 1, 0.01).name('Trail fade (0 = even)').onChange(onLook);
-  fm.add(params, 'Now Strength', 0, 1, 0.01).name('Flower of now (solid)').onChange(onLook);
-  fm.add(params, 'Trail Softness', 0, 1, 0.01).name('Trail softness').onChange(onLook);
-  fm.add(params, 'Streaks', 0, 3, 0.01).name('Streaks (smear along motion)').onChange(onLook);
-  fm.add(params, 'Afterglow', 0, 0.97, 0.01).name('Afterglow (longer trails)').onChange(onLook);
-  for (const f of [ff, flv, fc, fb, fs, fl, fbr, fm]) f.close();
+  const frb = gui.addFolder('Roots: blur (frosted glass)');
+  frb.add(params, 'Root Blur Amount', 0, 1.5, 0.01).name('Blur amount').onChange(onLook);
+  frb.add(params, 'Root Base Blur', 0, 1, 0.01).name('Blur everywhere').onChange(onLook);
+  frb.add(params, 'Root Focus Distance', -3, 3, 0.01).name('Sharp at (- near, + far)').onChange(onLook);
+  frb.add(params, 'Root Depth Range', 0.2, 5, 0.01).name('Depth to full blur').onChange(onLook);
+  frb.add(params, 'Root Only Behind Focus').name('Only blur behind').onChange(onLook);
+  frb.add(params, 'Root Frost', 0, 1, 0.01).name('Paler when blurred').onChange(onLook);
+  const frs = gui.addFolder('Roots: haze on the wall');
+  frs.add(params, 'Root Shadow').name('Haze on/off').onChange(onLook);
+  frs.addColor(params, 'Root Shadow Colour').name('Colour').onChange(onLook);
+  frs.add(params, 'Root Shadow Blur', 0, 1, 0.01).name('Blur').onChange(onLook);
+  frs.add(params, 'Root Shadow Opacity', 0, 1, 0.01).name('Opacity').onChange(onLook);
+  frs.add(params, 'Root Shadow Offset X', -0.5, 0.5, 0.005).name('Offset (- left, + right)').onChange(onLook);
+  frs.add(params, 'Root Shadow Offset Y', -0.5, 0.5, 0.005).name('Offset (- down, + up)').onChange(onLook);
+  frs.add(params, 'Root Shadow Size', 0.5, 3, 0.01).name('Size').onChange(onLook);
+  const fw = gui.addFolder('Wall');
+  fw.add(params, 'Wall From Page 7').name("Page 7's background").onChange(onLook);
+  fw.addColor(params, 'Wall Top').name('Wall top').onChange(onLook);
+  fw.addColor(params, 'Wall Bottom').name('Wall bottom').onChange(onLook);
+  // the lily itself: page 7, Effect 1 (flower, colours, breathing, long exposure, blur, its haze, colour grading)
+  const fly = gui.addFolder('Lily: from page 7 · Effect 1');
+  const lilyNote = { note: 'change it on page 7' };
+  fly.add(lilyNote, 'note').name('Lily look').disable();
+  for (const f of [frb, frs, fw]) f.close();
 
   function clearGarden() { growth.clear(); for (const p of plants) p.dispose(); plants.length = 0; pending.length = 0; }
   const actions = {
     'Save image (PNG)': () => { const a = document.createElement('a'); a.download = `garden-${Date.now()}.png`; a.href = canvas.toDataURL('image/png'); a.click(); },
     'Copy settings (JSON)': async () => { try { await navigator.clipboard.writeText(JSON.stringify(params, null, 2)); } catch { console.log(JSON.stringify(params, null, 2)); } },
-    'Reset settings': () => { Object.assign(params, flowerDefaults, GARDEN_DEFAULTS); save(); gui.controllersRecursive().forEach((c) => c.updateDisplay()); onFlower(); },
+    'Reset settings': () => { Object.assign(params, GARDEN_DEFAULTS); save(); gui.controllersRecursive().forEach((c) => c.updateDisplay()); },
   };
   for (const k of Object.keys(actions)) gui.add(actions, k);
 
-  // the Blender flower: its settings become the flower defaults (settings changed on this page and saved stay)
+  // the Blender flower (page 7's lily starts from it): read it, then page 7's settings again on top
   fetch(BLENDER_LILY_URL).then((r) => r.json()).then((j) => {
-    for (const [k, v] of Object.entries(j.settings ?? {})) {
-      if (!(k in flowerDefaults) || typeof v !== 'number' || RESOLUTION_KEYS.includes(k)) continue;
-      flowerDefaults[k] = v;
-      if (!(k in stored)) params[k] = v;
-    }
-    gui.controllersRecursive().forEach((c) => c.updateDisplay());
-    onFlower();
+    blender = j.settings ?? {};
+    if (syncLook()) onFlower();
   }).catch((e) => console.warn('Garden: could not load the Blender flower settings, using the web defaults', e));
 
   // ---------------------------------------------------------------- loop
@@ -1080,6 +1088,8 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
     renderer.compile(scene, camera);
     for (const p of temp) { for (const m of p.meshes) m.material = p.velMat; }
     renderer.compile(scene, camera);
+    for (const p of temp) { for (const m of p.meshes) m.material = p.cocMat; }
+    renderer.compile(scene, camera);
     for (const p of temp) p.dispose();
   }
 
@@ -1087,6 +1097,7 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
     show() {
       if (running) return;
       page.hidden = false; gui.show();
+      if (syncLook()) onFlower();                // page 7's lily settings, as they are now
       running = true; resize(); prewarm();
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame((time) => { lastTime = time; loop(time); });
@@ -1099,6 +1110,22 @@ export function createGardenPage(opts = {}) {   // opts: panelTop(gui) adds the 
   };
   // handy for testing in the browser console / Playwright
   window[opts.name ?? 'gardenApp'] = { params, growth, plants, lightInput, prof, startFake: (list) => growth.startFake(list), tryFlower, tryLeaf, step, pending,
+    // a fully grown lily on its own, for comparing with page 7: x, y in world units (0, 0 = the middle of the screen),
+    // size, lean (°), roll (turn around its stem), seedOff (0 = the same light / dark petals as page 7). centre: put
+    // the point page 7 looks at in the middle of the screen
+    testFlower({ x = 0, y = 0, size = params['Flower Size'], lean, roll = 0, seedOff = 0, centre = false } = {}) {
+      const fake = { points: [{ x: 0, y: 0, t: 0 }, { x: 0, y: 0, t: 0 }], spot: 0, depth: 0, parent: null };
+      const p = new Plant('flower', fake, 1, Math.PI / 2, size);
+      p.pin = { x, y, lean }; p.roll = roll; p.seedOff = seedOff; p.u.uSeedOff.value = seedOff;
+      p.update(growth.now, 0); p.outer.updateMatrixWorld(true);
+      if (centre) {
+        _v.set(0, LOOK7_TARGET_Y, 0).applyMatrix4(p.solidMesh.matrixWorld);
+        p.pin.x -= _v.x; p.pin.y -= _v.y; p.update(growth.now, 0);
+      }
+      plants.push(p);
+      return p;
+    },
+    clearGarden: () => clearGarden(), syncLook,
     // the openness (0 closed ... 1 open) every flower has right now: with one shared breath they are all the same
     openness: () => plants.filter((p) => p.isFlower && !p.crumbled).map((p) => opennessAt(p.tt(growth.now))), get sim() { return { W: SIM_W, H: SIM_H, now: growth.now, lastNow }; } };
   return api;
