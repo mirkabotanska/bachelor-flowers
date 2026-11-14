@@ -17,9 +17,12 @@ export const uniforms = {
   uSparkleSize: { value: 0.012 },
   uSparkleAmount: { value: 0 },
   uTint: { value: new THREE.Color(1, 0.6, 0.7) },
-  uSpotAmount: { value: 0.8 },
+  uSpotAmount: { value: 0 },
   uSpotSize: { value: 1 },
   uPetalGlow: { value: 0.06 },
+  uCoreAlpha: { value: 1 },            // used by style 2 (1 = no change, style 1 never touches these)
+  uCoreBright: { value: 1 },
+  uDissolve: { value: 0 },             // page 6: 0 -> 1 the flower falls apart into dust (0 = no effect)
 };
 
 // When does each version of a vertex appear?  x = points, y = wireframe, z = solid
@@ -38,24 +41,35 @@ vec3 buildStages(float g) {
 }`;
 
 // ------------------------------------------------------------------ the real flower
-export function createSolidMaterial() {
+// a separate copy of the uniforms, for flowers that need their own values (page 4)
+export function cloneUniforms(src) {
+  const out = {};
+  for (const [k, v] of Object.entries(src)) out[k] = { value: v.value?.clone ? v.value.clone() : v.value };
+  return out;
+}
+
+export function createSolidMaterial(u = uniforms) {
   const mat = new THREE.MeshPhysicalMaterial({
     vertexColors: true, roughness: 0.5, metalness: 0,
     sheen: 0.35, sheenRoughness: 0.5, sheenColor: new THREE.Color(1, 0.85, 0.9),
     side: THREE.DoubleSide, alphaHash: true,           // dithered fade-in, like Blender's "Dithered"
   });
   mat.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, uniforms);
+    Object.assign(shader.uniforms, u);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         ${STAGES}
         attribute float aGrowth; attribute float aU; attribute float aV; attribute float aPart; attribute float aSeed;
-        varying float vU; varying float vV; varying float vPart; varying float vSeed; varying float vSolid;`)
+        varying float vU; varying float vV; varying float vPart; varying float vSeed; varying float vSolid;
+        uniform float uDissolve;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
-        vU = aU; vV = aV; vPart = aPart; vSeed = aSeed; vSolid = buildStages(aGrowth).z;`);
+        vU = aU; vV = aV; vPart = aPart; vSeed = aSeed; vSolid = buildStages(aGrowth).z;
+        // dissolve: the tips go first, every vertex at a slightly random moment
+        float relV = (1.0 - aGrowth) * 0.45 + fract(sin(dot(position, vec3(12.9898, 78.233, 37.719))) * 43758.5453) * 0.25;
+        vSolid *= 1.0 - smoothstep(relV, relV + 0.25, uDissolve);`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
-        uniform vec3 uTint; uniform float uSpotAmount, uSpotSize, uPetalGlow;
+        uniform vec3 uTint; uniform float uSpotAmount, uSpotSize, uPetalGlow, uCoreAlpha, uCoreBright;
         varying float vU; varying float vV; varying float vPart; varying float vSeed; varying float vSolid;
         float hash3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
         float noise3(vec3 p) {
@@ -73,7 +87,8 @@ export function createSolidMaterial() {
           col = mix(col, vec3(0.25, 0.02, 0.06), spot);
           diffuseColor.rgb = col;
         }
-        diffuseColor.a *= vSolid;`)
+        diffuseColor.a *= vSolid * uCoreAlpha;
+        diffuseColor.rgb *= uCoreBright;`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
         if (vPart < 0.5) totalEmissiveRadiance += diffuseColor.rgb * uPetalGlow;`);
   };
@@ -81,9 +96,9 @@ export function createSolidMaterial() {
 }
 
 // ------------------------------------------------------------------ glowing points (one per vertex)
-export function createPointsMaterial() {
+export function createPointsMaterial(u = uniforms) {
   return new THREE.ShaderMaterial({
-    uniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: u, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     vertexShader: /* glsl */ `
       ${STAGES}
       uniform float uPxScale, uPointSize;
@@ -108,9 +123,9 @@ export function createPointsMaterial() {
 }
 
 // ------------------------------------------------------------------ wireframe (the mesh edges)
-export function createWireMaterial() {
+export function createWireMaterial(u = uniforms) {
   return new THREE.ShaderMaterial({
-    uniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: u, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     vertexShader: /* glsl */ `
       ${STAGES}
       attribute float aGrowth;
@@ -130,9 +145,9 @@ export function createWireMaterial() {
 }
 
 // ------------------------------------------------------------------ sparkles floating around the plant
-export function createSparkleMaterial() {
+export function createSparkleMaterial(u = uniforms) {
   return new THREE.ShaderMaterial({
-    uniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: u, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     vertexShader: /* glsl */ `
       uniform float uTime, uPxScale, uSparkleSize, uSparkleAmount;
       attribute vec3 aRand;          // x: size, y: phase, z: drift

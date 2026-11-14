@@ -4,13 +4,14 @@ import { uniforms, createSolidMaterial, createPointsMaterial, createWireMaterial
 
 // One procedural lily, drawn three ways (points, wireframe, solid) from the same data, plus sparkles.
 export class Lily extends THREE.Group {
-  constructor(params) {
+  constructor(params, u = uniforms) {                  // u: own uniforms (optional, page 4 flowers)
     super();
     this.params = params;
-    this.solidMat = createSolidMaterial();
-    this.pointsMat = createPointsMaterial();
-    this.wireMat = createWireMaterial();
-    this.sparkleMat = createSparkleMaterial();
+    this.u = u;
+    this.solidMat = createSolidMaterial(u);
+    this.pointsMat = createPointsMaterial(u);
+    this.wireMat = createWireMaterial(u);
+    this.sparkleMat = createSparkleMaterial(u);
     this.layout = '';                      // vertex / index counts of the current geometry
     this.rebuild();
   }
@@ -39,9 +40,9 @@ export class Lily extends THREE.Group {
   updateColour() {
     const p = this.params;
     const [r, g, b] = hsv(p['Blossom Hue'], p['Blossom Saturation'], p['Blossom Value']);
-    uniforms.uTint.value.setRGB(r, g, b, THREE.LinearSRGBColorSpace);
-    uniforms.uSpotAmount.value = p['Spot Amount'];
-    uniforms.uSpotSize.value = p['Spot Size'];
+    this.u.uTint.value.setRGB(r, g, b, THREE.LinearSRGBColorSpace);
+    this.u.uSpotAmount.value = p['Spot Amount'];
+    this.u.uSpotSize.value = p['Spot Size'];
   }
 
   get vertexCount() { return this.geometry ? this.geometry.attributes.position.count : 0; }
@@ -78,6 +79,7 @@ export class Lily extends THREE.Group {
     this.points = new THREE.Points(pg, this.pointsMat);
     for (const o of [this.mesh, this.wire, this.points]) { o.frustumCulled = false; this.add(o); }
     this.wire.renderOrder = 1; this.points.renderOrder = 2;
+    this.version = (this.version ?? 0) + 1;
   }
 
   #updatePositions(d) {
@@ -85,6 +87,7 @@ export class Lily extends THREE.Group {
     g.attributes.position.array.set(d.position); g.attributes.position.needsUpdate = true;
     g.attributes.aGrowth.array.set(d.growth); g.attributes.aGrowth.needsUpdate = true;
     g.computeVertexNormals();
+    this.version = (this.version ?? 0) + 1;      // lets other effects know the flower moved
   }
 
   #updateSparkles() {
